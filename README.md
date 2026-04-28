@@ -17,6 +17,8 @@ The tool catalogue exposed to MCP clients wraps a small set of public Splunk RES
 
 ## Quick start
 
+> Requires Python 3.10 or newer. Confirm with `python3 --version`; on macOS the bundled `python3` is older than this and `pyenv`, `uv`, or Homebrew Python is needed.
+
 ```bash
 pip install -e .
 
