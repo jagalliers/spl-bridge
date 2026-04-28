@@ -1,0 +1,315 @@
+{
+  "name": "spl-bridge default tool catalogue",
+  "description": "Default MCP tool collection. Each entry wraps a publicly documented Splunk REST endpoint (https://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTprolog) with a thin SPL `| rest` invocation and a deterministic `| fields` projection. See data/PROVENANCE.md for per-tool source-of-record citations.",
+  "version": "1.0.0",
+  "_provenance": "Independently authored against the public Splunk REST API Reference. Not derived from the CiscoDevNet/Splunk-MCP-Server-official source or the Splunkbase Splunk MCP Server app.",
+  "tools": [
+    {
+      "_key": "spl_bridge:builtin:get_info",
+      "name": "get_info",
+      "title": "get_info",
+      "description": "Return version, build, hardware, and licensing information for the connected Splunk instance.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "| rest /services/server/info | fields version, build, serverName, os_name, cpu_arch, numberOfCores, physicalMemoryMB, licenseState, kvStoreStatus, server_roles, health_info",
+          "row_limiter": false,
+          "time_range": false
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:get_indexes",
+      "name": "get_indexes",
+      "title": "get_indexes",
+      "description": "List indexes on the connected Splunk instance with size and event-count summaries.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "| rest /services/data/indexes count=0 | fields title, disabled, currentDBSizeMB, totalEventCount, splunk_server",
+          "row_limiter": true,
+          "time_range": false
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:get_index_info",
+      "name": "get_index_info",
+      "title": "get_index_info",
+      "description": "Return detailed configuration and storage state for a single named index.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "index_name": {
+            "type": "string",
+            "description": "Name of the index to describe.",
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "validation_message": "Index name may only contain alphanumeric characters, underscores, and hyphens.",
+            "_meta": { "formatting": { "needs_quoting": true } }
+          }
+        },
+        "required": ["index_name"]
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "| rest /services/data/indexes count=0 | search title=$index_name$ | fields title, disabled, currentDBSizeMB, totalEventCount, homePath, coldPath, thawedPath, maxDataSize, maxHotBuckets, maxWarmDBCount, datatype, frozenTimePeriodInSecs, maxTotalDataSizeMB, bucketRebuildMemoryHint, splunk_server",
+          "row_limiter": false,
+          "time_range": false
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:get_user_list",
+      "name": "get_user_list",
+      "title": "get_user_list",
+      "description": "List Splunk users together with their roles, default app, and last-login timestamp.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "| rest splunk_server=local /services/authentication/users count=0 | rename title AS username | eval capabilities_count=mvcount(capabilities) | fields username, realname, email, roles, defaultApp, capabilities_count, last_successful_login, type",
+          "row_limiter": true,
+          "time_range": false
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:get_user_info",
+      "name": "get_user_info",
+      "title": "get_user_info",
+      "description": "Return profile information about the currently authenticated Splunk principal.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "| rest splunk_server=local /services/authentication/current-context | eval capabilities_count=mvcount(capabilities) | fields username, realname, email, roles, defaultApp, capabilities_count, last_successful_login, type",
+          "row_limiter": false,
+          "time_range": false
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:run_query",
+      "name": "run_query",
+      "title": "run_query",
+      "description": "Execute an ad-hoc SPL search supplied by the caller. The SPL is validated against the project's command allowlist (data/safe_spl.json) before dispatch.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "SPL search to execute. Maximum 5000 characters.",
+            "pattern": "^[\\s\\S]{1,5000}$",
+            "validation_message": "SPL query is required and limited to 5000 characters.",
+            "_meta": { "formatting": { "needs_quoting": false } }
+          }
+        },
+        "required": ["query"]
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "$query$",
+          "row_limiter": true,
+          "time_range": true
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:get_metadata",
+      "name": "get_metadata",
+      "title": "get_metadata",
+      "description": "Return host, source, or sourcetype metadata for one or more indexes within the requested time window.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Metadata category to enumerate (hosts, sources, or sourcetypes).",
+            "enum": ["hosts", "sources", "sourcetypes"]
+          },
+          "index": {
+            "type": "string",
+            "description": "Index name or wildcard pattern (e.g. main, app_*, *).",
+            "default": "*",
+            "pattern": "^[A-Za-z0-9_*-]+$",
+            "validation_message": "Index pattern may only contain letters, numbers, underscore, dash, and the * wildcard.",
+            "_meta": { "formatting": { "needs_quoting": true } }
+          }
+        },
+        "required": ["type"]
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "| metadata type=$type$ index=$index$ | fields firstTime, lastTime, recentTime, host, source, sourcetype, totalCount, type",
+          "row_limiter": true,
+          "time_range": true
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:get_kv_store_collections",
+      "name": "get_kv_store_collections",
+      "title": "get_kv_store_collections",
+      "description": "Return raw KV Store collection statistics (storage size in bytes, document count) for each collection. Callers are expected to format units client-side.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "| rest /services/server/introspection/kvstore/collectionstats | mvexpand data | spath input=data | rex field=ns \"^[^.]+\\.(?<collection>.+)$\" | eval storage_bytes=coalesce(storageSize, size+totalIndexSize) | table collection, storage_bytes, count, size, totalIndexSize | sort collection",
+          "row_limiter": true,
+          "time_range": false
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:get_knowledge_objects",
+      "name": "get_knowledge_objects",
+      "title": "get_knowledge_objects",
+      "description": "List Splunk knowledge objects of a given type (saved searches, alerts, field extractions, aliases, calculated fields, lookups, automatic lookups, lookup transforms, macros, tags, data models, workflow actions, views, panels, or installed apps).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "description": "Knowledge-object category to enumerate.",
+            "enum": [
+              "saved_searches",
+              "alerts",
+              "field_extractions",
+              "field_aliases",
+              "calculated_fields",
+              "lookups",
+              "automatic_lookups",
+              "lookup_transforms",
+              "macros",
+              "tags",
+              "data_models",
+              "workflow_actions",
+              "views",
+              "panels",
+              "apps"
+            ]
+          }
+        },
+        "required": ["type"]
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "_type_spl_map": {
+          "saved_searches": "| rest /servicesNS/-/-/saved/searches count=0 | rename title AS name | fields name, search, cron_schedule, disabled, dispatch.earliest_time, dispatch.latest_time",
+          "alerts": "| rest /servicesNS/-/-/saved/searches count=0 | search alert_type!=\"\" alert_type!=\"always\" | rename title AS name | fields name, search, alert_type, actions, cron_schedule, disabled",
+          "field_extractions": "| rest /services/data/props/extractions count=0 | rename title AS name | fields name, type, attribute, stanza, disabled, owner, sharing, app",
+          "field_aliases": "| rest /services/data/props/fieldaliases count=0 | rename title AS name, stanza AS source_key | fields name, source_key, alias_fields",
+          "calculated_fields": "| rest /services/data/props/calcfields count=0 | rename title AS name, stanza AS sourcetype, eval AS eval_expression | fields name, sourcetype, eval_expression, field_name",
+          "lookups": "| rest /services/data/lookup-table-files count=0 | rename title AS name, eai:appName AS app | fields name, app, filename",
+          "automatic_lookups": "| rest /services/data/props/lookups count=0 | rename title AS name, stanza AS sourcetype | fields name, sourcetype, lookup_table, fields_list",
+          "lookup_transforms": "| rest /services/data/transforms/lookups count=0 | rename title AS name | fields name, external_type, filename, fields_list",
+          "macros": "| rest /services/data/macros count=0 | rename title AS name, args AS arguments | fields name, definition, arguments",
+          "tags": "| rest /services/search/tags count=0 | rename title AS tag_name | fields tag_name, canonical_name, tag_name_aliases",
+          "data_models": "| rest /services/datamodel/model count=0 | rename title AS name | fields name, eai:acl.app, eai:acl.owner, eai:acl.sharing, acceleration, disabled",
+          "workflow_actions": "| rest /services/data/ui/workflow-actions count=0 | rename title AS name | fields name, label, uri, fields, type",
+          "views": "| rest /services/data/ui/views count=0 | rename title AS name, isDashboard AS is_dashboard | fields name, label, is_dashboard",
+          "panels": "| rest /services/data/ui/panels count=0 | rename title AS name | fields name, eai:acl.app, eai:acl.owner, eai:acl.sharing, definition",
+          "apps": "| rest splunk_server=local /services/apps/local count=0 | rename title AS name | fields name, version, author, description, disabled, visible"
+        },
+        "execution": {
+          "type": "spl",
+          "template": "$type$",
+          "row_limiter": true,
+          "time_range": false
+        },
+        "built_in": true
+      }
+    },
+    {
+      "_key": "spl_bridge:builtin:run_saved_search",
+      "name": "run_saved_search",
+      "title": "run_saved_search",
+      "description": "Execute a Splunk saved search by name. Use get_knowledge_objects with type='saved_searches' to discover available saved searches. If the saved search name exists in multiple apps, the alphabetically first app is used unless 'app' is specified.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "saved_search_name": {
+            "type": "string",
+            "description": "Name of the saved search to execute.",
+            "pattern": "^(?=.*\\S)[\\s\\S]{1,500}$",
+            "validation_message": "Saved search name is required, cannot be blank, and is limited to 500 characters.",
+            "_meta": { "formatting": { "needs_quoting": true } }
+          },
+          "args": {
+            "type": "string",
+            "description": "Optional replacement arguments for saved-search tokens, as space-separated key=\"value\" pairs.",
+            "default": "",
+            "pattern": "^(\\s*[A-Za-z_][A-Za-z0-9_.]*\\s*=\\s*\"[^\"\\|\\[\\]`\\n\\r;]*\"(\\s+|$))*$",
+            "validation_message": "args must be space-separated key=\"value\" token assignments only.",
+            "_meta": { "formatting": { "needs_quoting": false } }
+          },
+          "earliest_time": {
+            "type": "string",
+            "description": "Override the saved search's default earliest time (e.g., -24h, -7d).",
+            "_meta": { "formatting": { "needs_quoting": false } }
+          },
+          "latest_time": {
+            "type": "string",
+            "description": "Override the saved search's default latest time (e.g., now, -1h).",
+            "_meta": { "formatting": { "needs_quoting": false } }
+          },
+          "app": {
+            "type": "string",
+            "description": "Splunk app context to dispatch the saved search in.",
+            "pattern": "^[A-Za-z0-9_.-]+$",
+            "validation_message": "App name may only contain letters, numbers, underscores, hyphens, and dots.",
+            "_meta": { "formatting": { "needs_quoting": false } }
+          }
+        },
+        "required": ["saved_search_name"]
+      },
+      "_meta": {
+        "external_app_id": "splunk",
+        "execution": {
+          "type": "spl",
+          "template": "| savedsearch $saved_search_name$ $args$",
+          "row_limiter": true,
+          "time_range": false
+        },
+        "built_in": true
+      }
+    }
+  ]
+}

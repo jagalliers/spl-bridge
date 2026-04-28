@@ -1,0 +1,24 @@
+{
+  "_provenance": "Independently curated by spl-bridge against the public Splunk Search Reference. List is purely factual: SPL commands valid in the leading position of a search pipeline.",
+  "generating_commands": [
+    "datamodel",
+    "dbinspect",
+    "eventcount",
+    "from",
+    "inputcsv",
+    "inputlookup",
+    "loadjob",
+    "metadata",
+    "pivot",
+    "rest",
+    "savedsearch",
+    "search",
+    "tstats",
+    "mstats",
+    "mcatalog",
+    "makeresults",
+    "input",
+    "summarize",
+    "collect"
+  ]
+}

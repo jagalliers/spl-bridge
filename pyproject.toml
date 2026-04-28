@@ -1,0 +1,182 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "spl-bridge"
+version = "0.1.0"
+description = "stdio MCP bridge for the Splunk Enterprise / Splunk Cloud REST API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"]
+dependencies = [
+    "mcp>=1.2.0",
+    "requests>=2.31.0",
+    "platformdirs>=4.0",
+]
+
+[project.optional-dependencies]
+keyring = [
+    "keyring>=24.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.1",
+    "respx>=0.21",
+    "keyring>=24.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-requests>=2.31",
+]
+release = [
+    "build>=1.2",
+    "twine>=5.0",
+    "pip-audit>=2.7",
+    "cyclonedx-bom>=4.5",
+]
+
+[project.scripts]
+spl-bridge = "spl_bridge.cli:main"
+
+[project.urls]
+Homepage      = "https://github.com/jagalliers/spl-bridge"
+Repository    = "https://github.com/jagalliers/spl-bridge"
+Issues        = "https://github.com/jagalliers/spl-bridge/issues"
+Changelog     = "https://github.com/jagalliers/spl-bridge/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["spl_bridge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Coverage runs every test invocation. The fail_under threshold lives
+# in [tool.coverage.report] so it's a single source of truth across
+# pytest, ``coverage report``, and ``coverage html``. We deliberately
+# do NOT pass --cov here -- pytest-cov would then re-instrument on
+# every collection-only run; instead, the helper invocations
+# (CI, ``scripts/release_check.sh``) pass --cov explicitly.
+markers = [
+    "pty: end-to-end PTY-driven setup wizard scenarios; opt-in via WIZARD_PTY_TESTS=1",
+    "docker: container build/run/compose tests; opt-in via DOCKER_TESTS=1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "build",
+    "dist",
+    ".venv",
+    "references",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "S",   # flake8-bandit (security)
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",   # line length handled by formatter; long log strings are fine
+    "S101",   # `assert` is the correct primitive for pytest
+    "S105",   # hardcoded-password-string false positives in tests
+    "S106",   # hardcoded-password-funcarg false positives in tests
+    "S110",   # try-except-pass: used intentionally for best-effort cleanup
+    "S112",   # try-except-continue: same rationale as S110
+    "S311",   # PRNG: not used for crypto in this project
+    "B008",   # function call in arg defaults: pydantic-style ok
+    "SIM108", # ternary not always clearer
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "S101",   # asserts everywhere is the point
+    "S105",   # hardcoded passwords are fixtures
+    "S106",
+    "S108",   # /tmp paths in tests are fine (use tmp_path where possible)
+    "B011",   # assert False intentional in tests
+    "SIM117", # nested `with` blocks are kept un-merged for diff readability
+]
+"tests/test_docker.py" = [
+    "S603",   # subprocess calls are vetted (docker CLI invocations only)
+    "S607",   # `docker`, `docker compose` resolved from PATH by design
+]
+"spl_bridge/setup_wizard/**/*.py" = [
+    "S603",   # subprocess calls are reviewed (claude CLI shellout)
+    "S607",   # partial-path executable: 'claude' is on PATH by design
+]
+"scripts/**/*.py" = [
+    "S603",   # PTY harness intentionally execvp's the wizard binary
+    "S606",   # same: os.execvp is the correct primitive for this harness
+    "S607",   # `spl-bridge` and `security` are resolved via PATH by design
+    "SIM117", # nested `with` blocks kept for readability
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.10"
+strict_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+exclude = [
+    "^build/",
+    "^dist/",
+    "^references/",
+    "^tests/",
+]
+
+[[tool.mypy.overrides]]
+module = ["mcp", "mcp.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["keyring", "keyring.*", "platformdirs", "platformdirs.*"]
+ignore_missing_imports = true
+
+# ------------------------------------------------------------------ #
+# Coverage                                                           #
+# ------------------------------------------------------------------ #
+# Source set is the runtime package only -- we deliberately exclude
+# tests, scripts (PTY harness, release_audit), and the wizard PTY
+# scenario tree, none of which ship in the wheel.
+#
+# Branch coverage is on because several modules (server.py error
+# classifier, splunk_client._do_request) make the big behavioural
+# differences in branch arms, not statement counts.
+[tool.coverage.run]
+branch = true
+source = ["spl_bridge"]
+
+[tool.coverage.report]
+# Hard floor agreed in the pre-push readiness plan. Anything below
+# this fails CI -- which is the point: it forces us to either add
+# the test or justify the coverage drop.
+fail_under = 80
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    # ``if TYPE_CHECKING:`` is import-time scaffolding and is never
+    # hit at runtime; flagging it as uncovered just creates noise.
+    "if TYPE_CHECKING:",
+]

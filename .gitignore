@@ -1,0 +1,59 @@
+# Secrets
+.env
+.env.*
+*.env
+
+# Python build
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pycache_tmp/
+.venv/
+venv/
+env/
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+.cursor/mcp.json
+
+# Reference materials never live in the repo
+Splunk_MCP_Server/
+references/
+
+# PTY-test backup files (defense-in-depth: a crashing harness must
+# never accidentally land a snapshot of ~/.cursor/mcp.json or any
+# user dotfile in the repo).
+*.smoketest-bak-*
+*.bak.*
+
+# Audit / SBOM artifacts emitted at release time
+audit/
+sbom.json
+pip-audit.json
+.pip-audit-cache/
+
+# Local audit-validation venv created by pre-push smoke tests
+.venv-audit-test/
+.venv-cov/
+.venv-smoketest/
+
+# Coverage outputs
+htmlcov/
+.coverage
+.coverage.*

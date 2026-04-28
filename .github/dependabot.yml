@@ -1,0 +1,15 @@
+# Dependabot config — automatically open PRs to bump pinned third-party
+# GitHub Actions SHAs (see L-7 in SECURITY_AUDIT.md).  All actions in
+# .github/workflows/ are pinned to commit SHAs with a comment showing
+# the human-readable tag; Dependabot understands this format and will
+# update both the SHA and the trailing tag comment in lockstep.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+      include: scope

@@ -1,0 +1,43 @@
+# pre-commit hooks for spl-bridge.
+#
+# Install once per clone:
+#   pipx install pre-commit
+#   pre-commit install
+#
+# All hooks here are intentionally fast (sub-second on the full tree)
+# so they don't slow down a normal commit. Heavier checks (mypy,
+# pytest, pip-audit) live in CI.
+
+repos:
+  # Local hooks first - we want the secret scanner to be the very
+  # first thing that runs so a typo'd commit can't leak credentials
+  # even if formatting succeeds.
+  - repo: local
+    hooks:
+      - id: check-no-secrets
+        name: check-no-secrets (block hardcoded credentials)
+        entry: scripts/check_no_secrets.sh
+        language: system
+        # Run on the full staged set; the script accepts file paths.
+        # Skip lockfiles and binaries (they're either machine-generated
+        # or non-text; the scanner's own skip_re handles binaries too).
+        exclude: ^(uv\.lock|poetry\.lock|.*\.lock|dist/|build/)
+        pass_filenames: true
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.6.9
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=512]

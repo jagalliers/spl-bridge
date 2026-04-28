@@ -1,0 +1,53 @@
+# Example docker-compose for spl-bridge.
+#
+# This file demonstrates the secure pattern: secrets stay in Docker
+# secrets (mounted as files at /run/secrets/<name>), and the container
+# reads them via SPLUNK_TOKEN_FILE / SPLUNK_PASSWORD_FILE.
+#
+# Copy to docker-compose.yml and edit before running.
+#
+# Note: stdio MCP servers normally run on demand from an MCP host
+# (Cursor, Claude Desktop). This compose file is most useful for
+# integration testing or for piping stdio through a tunnel.
+
+version: "3.9"
+
+services:
+  spl-bridge:
+    image: spl-bridge:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # stdio MCP requires an attached stdin/stdout. compose's `tty: true`
+    # plus the host's `docker attach` keeps the channel open.
+    stdin_open: true
+    tty: false
+    user: "65532:65532"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      SPLUNK_HOST: splunk.example.com
+      SPLUNK_PORT: "8089"
+      SPLUNK_SCHEME: https
+      SPLUNK_VERIFY_SSL: "true"
+      # The container reads the token from a mounted file so it never
+      # appears in env vars (which are visible to anyone who can `docker
+      # inspect`).
+      SPLUNK_TOKEN_FILE: /run/secrets/splunk_token
+      MCP_REQUIRE_CAPABILITIES: "true"
+      MCP_RATE_LIMITS: '{"global":120,"run_search":30}'
+    secrets:
+      - splunk_token
+    # Tight resource limits make abusive prompts more expensive.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+
+secrets:
+  splunk_token:
+    file: ./secrets/splunk_token  # plain file, mode 0600 on host

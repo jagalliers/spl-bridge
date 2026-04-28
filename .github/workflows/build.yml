@@ -1,0 +1,70 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: sdist + wheel + audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-build-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            pip-${{ runner.os }}-build-
+
+      # ``release`` extras pull in build, twine, pip-audit, and
+      # cyclonedx-bom (which provides the cyclonedx_py CLI). We
+      # install the project itself so the SBOM step has a complete
+      # environment to introspect.
+      - name: Install project + release tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[release]"
+
+      # release_audit.sh runs build, twine check, pip-audit (env +
+      # wheel), and SBOM generation. Failing here blocks the merge
+      # because supply-chain regressions are not something we accept
+      # on main.
+      #
+      # PIP_AUDIT_IGNORE_VULNS pins findings that are accepted with
+      # documented rationale. Each entry MUST appear in CHANGELOG.md
+      # under "Known supply-chain advisories" so reviewers can audit
+      # the suppression list. Re-evaluate every entry whenever the
+      # advisory's affected-versions range changes.
+      - name: Run release audit
+        env:
+          # GHSA-58qw-9mgm-455v / CVE-2026-3219: medium-severity
+          # interpretation conflict in pip's archive handler. Affects
+          # the build environment's pip itself, not spl-bridge's
+          # runtime dependencies (mcp / requests / platformdirs are
+          # all clean per the wheel-only audit). No fix version
+          # published upstream as of 2026-04-24. Drop this entry once
+          # pip ships a fix. See CHANGELOG.md.
+          PIP_AUDIT_IGNORE_VULNS: GHSA-58qw-9mgm-455v
+        run: ./scripts/release_audit.sh
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: |
+            dist/*
+            dist/sbom/*
+          retention-days: 14

@@ -1,0 +1,61 @@
+spl-bridge
+Copyright 2026 Jesse Galliers and contributors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+------------------------------------------------------------------------
+Independence statement
+
+spl-bridge is independently authored expression developed against the
+publicly documented Splunk Enterprise / Splunk Cloud REST API and the
+publicly documented Splunk Search Processing Language (SPL).
+
+No source code, configuration file, JSON schema, SPL template, or other
+non-trivial expressive content has been copied from, or paraphrased
+from:
+
+  - The "Splunk MCP Server" app published on Splunkbase by Splunk LLC
+    (Splunkbase app id 7931), which is governed by the Splunk General
+    Terms (https://www.splunk.com/en_us/legal/splunk-general-terms.html);
+    or
+  - The "Splunk-MCP-Server-official" source repository published by
+    Cisco at https://github.com/CiscoDevNet/Splunk-MCP-Server-official,
+    which is distributed under the Cisco Sample Code License v1.1.
+
+No portion of this project is offered under, or derived from anything
+offered under, the Splunk General Terms or the Cisco Sample Code
+License v1.1. The tool catalogue and SPL allowlist exposed by this
+project are authored against publicly available Splunk REST endpoint
+documentation; see ``spl_bridge/data/PROVENANCE.md`` for per-file
+provenance.
+
+------------------------------------------------------------------------
+Trademark
+
+"Splunk", "Splunk Enterprise", and "Splunk Cloud" are trademarks or
+registered trademarks of Splunk LLC (a Cisco company) in the United
+States and other countries. "Cisco" is a trademark or registered
+trademark of Cisco Systems, Inc. and/or its affiliates.
+
+spl-bridge is an independent open-source project. It is not
+affiliated with, endorsed by, sponsored by, or certified by Splunk LLC
+or Cisco Systems, Inc. References to "Splunk" in this project's
+documentation are made under nominative fair use solely to identify the
+upstream system this bridge interoperates with, in accordance with the
+Splunk Trademark Usage Guidelines
+(https://www.splunk.com/en_us/legal/trademark-usage-guidelines.html).
+
+"Model Context Protocol" and "MCP" are used to identify the open
+protocol specification published at https://modelcontextprotocol.io.
+
+------------------------------------------------------------------------
+Third-party software
+
+This project is distributed with, and at runtime depends on, third-party
+open-source software. Aggregated upstream license and notice text for
+the runtime dependency closure is provided in THIRD_PARTY_NOTICES.txt
+shipped in the source distribution, the wheel, and the container image.
