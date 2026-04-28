@@ -294,9 +294,19 @@ def main() -> int:
     else:
         with open(cursor_cfg, encoding="utf-8") as fh:
             cfg = json.load(fh)
-        print(f"Cursor config at {cursor_cfg}:")
-        print(json.dumps(cfg, indent=2))
         servers = cfg.get("mcpServers", {})
+        # Print only the entry the wizard was supposed to create. The
+        # surrounding `mcpServers` map may already contain unrelated
+        # entries from other MCP servers the user has configured, and
+        # those entries can carry secrets in their args/env (bearer
+        # tokens, URLs with credentials). The harness has no business
+        # echoing those to the operator's terminal.
+        entry = servers.get("splunk-wizard-smoketest")
+        print(f"Cursor config at {cursor_cfg} (showing splunk-wizard-smoketest entry only):")
+        if entry is not None:
+            print(json.dumps({"mcpServers": {"splunk-wizard-smoketest": entry}}, indent=2))
+        else:
+            print("  (entry missing -- see validation below)")
         if "splunk-wizard-smoketest" not in servers:
             artefact_problems.append("Cursor config missing `splunk-wizard-smoketest` entry")
         else:

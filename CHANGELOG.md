@@ -5,6 +5,17 @@ All notable changes to **spl-bridge** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- README "Quick start" now states the Python 3.10+ requirement up front,
+  including a note about macOS's bundled `python3` being too old.
+- `scripts/smoketest_wizard.py` now prints only the `splunk-wizard-smoketest`
+  entry it just created, not the entire `~/.cursor/mcp.json`. Avoids echoing
+  pre-existing entries (which may carry bearer tokens in their `args`/`env`)
+  to the operator's terminal.
+
 ## [0.1.0] - YYYY-MM-DD
 
 Initial public release: a stdio MCP bridge that connects an LLM agent
