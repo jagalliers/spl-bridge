@@ -104,6 +104,47 @@ def _client_safe_error(prefix: str, status: int | None = None) -> str:
     return f"{prefix} (request_id={rid})"
 
 
+# Minimal allow-list mapping from upstream substring markers to
+# project-curated hint strings for HTTP 400 responses to
+# ``services/search/jobs/export`` when the originating tool was
+# ``splunk_run_saved_search``. We never echo upstream bytes back to
+# the client; we only assert that the caller has hit a known failure
+# mode and return a fixed, project-owned remediation hint. Order
+# matters: the first matching marker wins. Markers are matched
+# case-sensitively against the *raw* upstream body before any
+# sanitisation.
+#
+# Growing this list is an explicit code change plus a test (see
+# tests/test_savedsearch_classifier.py); resist the temptation to
+# regex-extract structured fields from the upstream body, since that
+# would break the README invariant that upstream bodies are not
+# surfaced to clients.
+_SAVEDSEARCH_400_HINTS: tuple[tuple[str, str], ...] = (
+    (
+        "argument map",
+        "Saved search requires arguments that were not provided. "
+        "Pass them via the `args` parameter as space-separated "
+        'key="value" pairs, for example args=\'hosts="web*"\'.',
+    ),
+    (
+        "Could not find variable",
+        "Saved search references a token variable that was not "
+        "supplied. Pass the missing token via the `args` parameter "
+        'as space-separated key="value" pairs.',
+    ),
+)
+
+
+def _classify_savedsearch_400(upstream_body: str) -> str | None:
+    """Map a known 400 upstream body to a project-curated hint, or ``None``."""
+    if not upstream_body:
+        return None
+    for marker, hint in _SAVEDSEARCH_400_HINTS:
+        if marker in upstream_body:
+            return hint
+    return None
+
+
 def _sanitize_for_log(body: str, max_len: int = 500) -> str:
     """Shorten and lightly redact REST error bodies before logging."""
     if not body:
@@ -432,8 +473,19 @@ class SplunkClient:
         latest_time: str | None = None,
         row_limit: int = 100,
         app: str | None = None,
+        *,
+        classify_400_as_savedsearch: bool = False,
     ) -> dict[str, Any]:
-        """POST to ``search/jobs/export`` and parse NDJSON results."""
+        """POST to ``search/jobs/export`` and parse NDJSON results.
+
+        ``classify_400_as_savedsearch`` is opt-in. When True and the
+        upstream returns HTTP 400 with a body matching one of the
+        known ``_SAVEDSEARCH_400_HINTS`` markers, the returned
+        ``error`` string carries a project-curated remediation hint
+        (still tagged with the request id) instead of the opaque
+        generic wrapper. Defaults to False to preserve the
+        always-redact behaviour for every other call site.
+        """
         data: dict[str, Any] = {
             "search": query,
             "output_mode": "json",
@@ -454,6 +506,10 @@ class SplunkClient:
                 response.status_code,
                 err_preview,
             )
+            if classify_400_as_savedsearch and response.status_code == 400:
+                hint = _classify_savedsearch_400(response.text)
+                if hint is not None:
+                    return {"error": f"{hint} (HTTP 400; request_id={current_request_id()})"}
             return {"error": _client_safe_error("Splunk API error", response.status_code)}
 
         parsed = convert_ndjson_to_dict(response.text)

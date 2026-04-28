@@ -316,6 +316,12 @@ def _build_mcp_app(
             latest_time=latest,
             row_limit=effective_limit,
             app=arguments.get("app"),
+            # Targeted error-ergonomics opt-in: only when the
+            # originating tool is splunk_run_saved_search do we let
+            # the client see a curated remediation hint for known
+            # 400 patterns (e.g. missing token argument). Every
+            # other tool keeps the always-redact wrapper.
+            classify_400_as_savedsearch=(tool_def["name"] == "run_saved_search"),
         )
 
         if "error" in result:
