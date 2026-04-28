@@ -209,8 +209,7 @@ def collect_packages(lockfile: Path) -> tuple[list[dict], list[str]]:
     if extra_in_env:
         warnings.append(
             "the current environment has packages NOT in the Docker lockfile "
-            f"(ignored): {', '.join(extra_in_env[:10])}"
-            + ("..." if len(extra_in_env) > 10 else "")
+            f"(ignored): {', '.join(extra_in_env[:10])}" + ("..." if len(extra_in_env) > 10 else "")
         )
 
     return rendered, warnings
