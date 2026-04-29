@@ -27,7 +27,7 @@ The CLI exposes three subcommands: `setup` (interactive wizard), `doctor` (one-s
 The minimum install is one line:
 
 ```bash
-pip install spl-bridge
+pip install 'spl-bridge @ git+https://github.com/jagalliers/spl-bridge.git'
 ```
 
 That gives you the server, the `doctor` connectivity check, and the setup wizard. By itself, secrets land in a 0600 dotfile under `~/Library/Application Support/spl-bridge/` (macOS), `%LOCALAPPDATA%\spl-bridge\` (Windows), or `~/.config/spl-bridge/` (Linux). The dotfile is protected by **filesystem permissions only** — it is not encrypted at rest.
@@ -35,16 +35,17 @@ That gives you the server, the `doctor` connectivity check, and the setup wizard
 For OS-keychain storage instead — macOS Keychain, Windows Credential Manager, Linux Secret Service / KWallet — install with the optional `keyring` add-on:
 
 ```bash
-pip install 'spl-bridge[keyring]'
+pip install 'spl-bridge[keyring] @ git+https://github.com/jagalliers/spl-bridge.git'
 ```
 
-> **What's `[keyring]` and why the quotes?**
+> **What's with the `git+https://...`, the `[keyring]`, and the quotes?**
 >
+> - **`git+https://github.com/jagalliers/spl-bridge.git`** is the URL form because **`spl-bridge` is not yet published to PyPI**. Until it is, pip has to fetch the wheel directly from this repository. The `name @ url` syntax is standard PEP 508 — it tells pip "install the package called `spl-bridge` from this URL" and is supported by every pip released since 2019. Once we publish to PyPI, the URL fragment goes away and these commands shorten to `pip install spl-bridge` and `pip install 'spl-bridge[keyring]'`.
 > - **`[keyring]`** is pip's syntax for an *optional dependency group* (declared in our `pyproject.toml`). It tells pip "install `spl-bridge` *plus* the Python `keyring` library, which is the standard cross-platform shim that talks to your OS credential store." The bracket form is purely additive — both commands install the same `spl-bridge` package and CLI; the second one just installs more.
-> - **The single quotes** around `'spl-bridge[keyring]'` are only required by some shells, notably **zsh** (the macOS default), which otherwise treats `[` and `]` as filename glob characters and fails with `zsh: no matches found: spl-bridge[keyring]`. In bash, fish, and PowerShell the quotes are harmless, so the quoted form is the safe copy-paste regardless of platform.
-> - **It's re-runnable.** You can add OS-keychain support to an existing install at any time by re-running `pip install 'spl-bridge[keyring]'`; pip will only install what's missing.
+> - **The single quotes** around the whole `'spl-bridge[keyring] @ git+...'` argument are required because (a) **zsh** (the macOS default shell) otherwise treats `[` and `]` as filename glob characters and fails with `zsh: no matches found`, and (b) the `@` and the `://` in the URL are also shell-significant in some setups. In bash, fish, and PowerShell the quotes are harmless, so the fully-quoted form is the safe copy-paste regardless of platform.
+> - **It's re-runnable.** You can add OS-keychain support to an existing install at any time by re-running `pip install 'spl-bridge[keyring] @ git+https://github.com/jagalliers/spl-bridge.git'`; pip will only install what's missing.
 
-For development against a checkout, the same `[name]` syntax applies — `.` is the current directory, `[dev,keyring]` selects two extras at once:
+For development against a local checkout (after `git clone`), the URL goes away — `.` is the current directory and `[dev,keyring]` selects two extras at once:
 
 ```bash
 pip install -e '.[dev,keyring]'
@@ -148,7 +149,7 @@ Use this path when you're scripting deployment, running in Docker / Kubernetes, 
 #### Quick start with environment variables
 
 ```bash
-pip install spl-bridge
+pip install 'spl-bridge @ git+https://github.com/jagalliers/spl-bridge.git'
 
 export SPLUNK_HOST=splunk.example.com
 export SPLUNK_TOKEN=your-splunk-token

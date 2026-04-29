@@ -128,9 +128,15 @@ class KeyringStore(CredStore):
             import keyring
             from keyring.errors import KeyringError  # noqa: F401
         except ImportError as exc:
+            # NOTE: Until the project is published to PyPI, the suggestion
+            # uses the PEP 508 git-URL form. The bare `pip install
+            # 'spl-bridge[keyring]'` would fail with "Could not find a
+            # version that satisfies the requirement spl-bridge". Once on
+            # PyPI, drop the ` @ git+...` suffix.
             raise CredStoreError(
                 "The optional `keyring` extra is not installed. "
-                "Install with `pip install 'spl-bridge[keyring]'`."
+                "Install with `pip install "
+                "'spl-bridge[keyring] @ git+https://github.com/jagalliers/spl-bridge.git'`."
             ) from exc
         self._keyring = keyring
 

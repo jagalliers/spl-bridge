@@ -80,6 +80,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   base install lacked the `[keyring]` extra and ran `spl-bridge setup`
   would have received a copy-paste-broken hint. Quoted form works in
   bash, zsh, fish, and PowerShell. No other behaviour change.
+- **All documented `pip install spl-bridge[...]` commands replaced with
+  the working PEP 508 git-URL form.** The README's two install lines
+  (base and `[keyring]` extra), the Manual-configuration quick-start,
+  and both wizard error suggestions
+  (`spl_bridge.setup_wizard.prereqs.check_keyring_backend` and
+  `spl_bridge.setup_wizard.credstore.KeyringStore.__init__`) all
+  pointed at `pip install spl-bridge`, which fails for every new user
+  with `Could not find a version that satisfies the requirement
+  spl-bridge` because the project is not yet published to PyPI
+  (`https://pypi.org/pypi/spl-bridge/json` returns HTTP 404). Six call
+  sites now use the standards-compliant
+  `pip install 'spl-bridge[keyring] @ git+https://github.com/jagalliers/spl-bridge.git'`
+  form, which works against the latest `main` today. The `## Install`
+  callout was extended with an opening bullet that explains the
+  `git+https://...` form, why it is currently necessary, and the
+  one-line shortening that becomes possible once the package is
+  published to PyPI. The dev-clone install
+  (`pip install -e '.[dev,keyring]'`) and `CONTRIBUTING.md` are
+  unchanged because they install from the local checkout, not PyPI.
 
 ## [0.1.0] - YYYY-MM-DD
 
