@@ -44,6 +44,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
+- **README header now carries three live status badges** (CI status,
+  License, supported Python version) directly under the project title,
+  matching the layout convention used by adjacent open-source projects
+  such as OpsBlaze. The CI badge is driven by GitHub Actions
+  (`ci.yml` on `main`) and reflects the latest workflow conclusion in
+  real time; the License and Python badges are static and reflect
+  `LICENSE` (Apache-2.0) and `pyproject.toml`'s `requires-python`
+  (`>=3.10`) respectively. No content removed; tagline and rest of the
+  README unchanged.
 - `CONTRIBUTING.md` adds a "Commit trailers (and a note for AI coding
   assistants)" subsection clarifying that `Signed-off-by:` is the only
   required trailer and that `Co-authored-by:` should be reserved for
