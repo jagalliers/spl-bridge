@@ -1,12 +1,15 @@
-"""bad_password_recovery: probe fails on bad password, user declines.
+"""bad_password_recovery: probe fails on bad password, user picks Quit.
 
 Verifies that:
 * The probe actually attempts auth and fails cleanly (no traceback).
-* The "Continue anyway and persist these settings?" prompt appears.
-* Answering "no" leaves Cursor mcp.json untouched and the keychain
-  free of any new rows for our scenario.
+* The new 3-option failure menu ("How would you like to proceed?")
+  appears with Edit / Save anyway / Quit choices.
+* Picking "Quit without saving" (option 3) leaves Cursor mcp.json
+  untouched and the keychain free of any new rows for our scenario.
 
-This is the most important "user mistyped their password" guardrail.
+This scenario covers the "user mistyped their password and wants to
+bail" guardrail. The edit-and-retry path is exercised separately by
+the unit tests in tests/test_setup_wizard.py.
 """
 
 from __future__ import annotations
@@ -35,12 +38,16 @@ def _script(splunk: dict[str, str]) -> list[tuple[str, bytes]]:
         ("Splunk REST management port [8089]:", f"{splunk['port']}\r".encode()),
         ("Select [1-2]:", b"1\r"),  # https
         ("Select [1-3]:", b"3\r"),  # disable verify
-        ("type 'I UNDERSTAND' to confirm", b"I UNDERSTAND\r"),
+        ("Continue with TLS verification disabled?", b"y\r"),
         ("Select [1-2]:", b"2\r"),  # username + password
-        ("type 'I UNDERSTAND' to confirm", b"I UNDERSTAND\r"),
+        ("Continue and send the password to this endpoint?", b"y\r"),
         ("Splunk username [admin]:", f"{splunk['username']}\r".encode()),
         ("Splunk password:", WRONG_PASSWORD.encode() + b"\r"),
-        ("Continue anyway and persist these settings?", b"n\r"),
+        # Probe fails -> 3-option menu (Edit / Save anyway / Quit).
+        # Pick option 3 (Quit). The earlier TLS-verify Select [1-3]:
+        # was already consumed by the driver's per-step buffer clear,
+        # so this match is unambiguous.
+        ("Select [1-3]:", b"3\r"),
     ]
 
 
@@ -66,8 +73,8 @@ def run() -> ScenarioReport:
         cleaned = strip_ansi(result.transcript)
         if "Connection failed" not in cleaned:
             artefact_problems.append("expected 'Connection failed' in probe output")
-        if "Continue anyway and persist these settings?" not in cleaned:
-            artefact_problems.append("did not reach decline prompt")
+        if "How would you like to proceed?" not in cleaned:
+            artefact_problems.append("did not reach probe-failure menu")
 
         # Verify NOTHING was persisted past the decline.
         if keychain_has("spl-bridge", "SPLUNK_PASSWORD"):

@@ -42,7 +42,7 @@ def _script(splunk: dict[str, str], token: str) -> list[tuple[str, bytes]]:
         ("Splunk REST management port [8089]:", f"{splunk['port']}\r".encode()),
         ("Select [1-2]:", b"1\r"),  # https
         ("Select [1-3]:", b"3\r"),  # disable verify
-        ("type 'I UNDERSTAND' to confirm", b"I UNDERSTAND\r"),
+        ("Continue with TLS verification disabled?", b"y\r"),
         ("Select [1-2]:", b"1\r"),  # token (recommended)
         ("Splunk auth token:", token.encode() + b"\r"),
         ("MCP server name [splunk]:", f"{SERVER_NAME}\r".encode()),

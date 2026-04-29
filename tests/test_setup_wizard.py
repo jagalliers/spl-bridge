@@ -475,8 +475,16 @@ def _drive_wizard(
     *,
     keyring_works: bool = False,
     probe_ok: bool = True,
+    probe_results: list[splunk_probe.ProbeResult] | None = None,
 ):
-    """Helper: install scripted input/getpass/keyring and run main()."""
+    """Helper: install scripted input/getpass/keyring and run main().
+
+    ``probe_results``, when provided, overrides ``probe_ok`` and lets a
+    test simulate a sequence of probe outcomes across the new
+    edit-and-retry loop -- one entry is consumed per ``probe()`` call.
+    The stub raises if the wizard asks for more probes than the test
+    scripted, which catches off-by-one bugs in the retry budget.
+    """
     answer_iter = iter(answers)
     secret_iter = iter(secrets)
 
@@ -505,13 +513,26 @@ def _drive_wizard(
     monkeypatch.setitem(sys.modules, "keyring.errors", errors)
 
     # Stub the probe so we don't need a Splunk instance.
-    if probe_ok:
-        result = splunk_probe.ProbeResult(
-            ok=True, server_name="lab", version="9.2.0", auth_mode="token"
-        )
+    if probe_results is not None:
+        results_iter = iter(probe_results)
+
+        def _next_probe(_cfg):
+            try:
+                return next(results_iter)
+            except StopIteration as exc:
+                raise AssertionError(
+                    "Wizard called probe() more times than the test scripted"
+                ) from exc
+
+        monkeypatch.setattr(splunk_probe, "probe", _next_probe)
     else:
-        result = splunk_probe.ProbeResult(ok=False, error="connect refused", auth_mode="token")
-    monkeypatch.setattr(splunk_probe, "probe", lambda _cfg: result)
+        if probe_ok:
+            result = splunk_probe.ProbeResult(
+                ok=True, server_name="lab", version="9.2.0", auth_mode="token"
+            )
+        else:
+            result = splunk_probe.ProbeResult(ok=False, error="connect refused", auth_mode="token")
+        monkeypatch.setattr(splunk_probe, "probe", lambda _cfg: result)
 
     # Force MCP client writes into tmp.
     cursor_path = tmp_path / "cursor_mcp.json"
@@ -524,6 +545,15 @@ def _drive_wizard(
 
     monkeypatch.setattr("spl_bridge.setup_wizard.mcp_clients.all_writers", _writers)
     monkeypatch.setattr("spl_bridge.setup_wizard.all_writers", _writers)
+
+    # Force the launch-command resolver to a stable, absolute, non-PATH-
+    # dependent value so the test asserts the *behaviour* (an absolute
+    # path is written) without depending on whether `spl-bridge` happens
+    # to be on the test runner's PATH.
+    monkeypatch.setattr(
+        "spl_bridge.setup_wizard._resolve_spl_bridge_command",
+        lambda: "/opt/test-prefix/bin/spl-bridge",
+    )
     return cursor_path
 
 
@@ -549,9 +579,13 @@ class TestWizardMainFlow:
         # Dotfile written under tmp/config/
         creds = (tmp_path / "config" / "credentials").read_text()
         assert "SPLUNK_TOKEN=super-secret-token" in creds
-        # Cursor config written
+        # Cursor config written -- and the command is the resolved
+        # absolute path, not a bare "spl-bridge" name (R-launchd-PATH:
+        # macOS Claude Desktop and similar launchd-spawned MCP hosts
+        # don't inherit the user's shell PATH, so a bare command name
+        # would fail to resolve at spawn time).
         cursor = json.loads(cursor_path.read_text())
-        assert cursor["mcpServers"]["splunk"]["command"] == "spl-bridge"
+        assert cursor["mcpServers"]["splunk"]["command"] == "/opt/test-prefix/bin/spl-bridge"
         assert cursor["mcpServers"]["splunk"]["env"]["SPLUNK_HOST"] == "splunk.example.com"
         # Secret is NOT in any rendered output
         captured = capsys.readouterr()
@@ -603,7 +637,391 @@ class TestWizardMainFlow:
         assert rc == 2
         assert not (tmp_path / "config" / "credentials").exists()
 
+    def test_disable_tls_verify_no_aborts(self, monkeypatch, tmp_path: Path) -> None:
+        """The TLS-disabled risk gate is a y/N (default no). Empty / 'n'
+        must abort cleanly without writing anything.
+        """
+        _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",  # scheme = https
+                "3",  # TLS verification = DISABLED (lab only)
+                "n",  # decline the risk -> abort
+            ],
+            secrets=[],
+            keyring_works=False,
+        )
+        rc = wizard_main()
+        assert rc == 2
+        assert not (tmp_path / "config" / "credentials").exists()
+
+    def test_disable_tls_verify_yes_proceeds(self, monkeypatch, tmp_path: Path) -> None:
+        """Same gate, but accepted -- wizard continues and persists."""
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",  # scheme = https
+                "3",  # TLS verification = DISABLED
+                "y",  # accept the risk
+                "1",  # auth mode = token
+                "splunk",
+                "1",  # writer = Cursor
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        rc = wizard_main()
+        assert rc == 0
+        cursor = json.loads(cursor_path.read_text())
+        # SPLUNK_VERIFY_SSL=false propagated into the launch env
+        assert cursor["mcpServers"]["splunk"]["env"]["SPLUNK_VERIFY_SSL"] == "false"
+
+    def test_password_over_unverified_tls_no_aborts(self, monkeypatch, tmp_path: Path) -> None:
+        """Password + TLS-disabled -- the second risk gate must also be a
+        y/N that aborts cleanly on 'n'.
+        """
+        _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",  # scheme = https
+                "3",  # TLS verification = DISABLED
+                "y",  # accept TLS-disabled risk
+                "2",  # auth mode = password
+                "n",  # decline the password+unverified risk -> abort
+            ],
+            secrets=[],
+            keyring_works=False,
+        )
+        rc = wizard_main()
+        assert rc == 2
+        assert not (tmp_path / "config" / "credentials").exists()
+
+    def test_probe_fail_edit_then_succeed(self, monkeypatch, tmp_path: Path) -> None:
+        """Probe fails on attempt 1; user picks 'Edit', re-collects with
+        defaults, probe succeeds on attempt 2; wizard persists.
+        """
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                # Attempt 1 collection
+                "splunk.example.com",  # host
+                "8089",  # port
+                "1",  # scheme = https
+                "1",  # TLS = system CA
+                "1",  # auth = token
+                # Probe fails -> failure menu
+                "1",  # Edit and try again
+                # Attempt 2 collection (defaults pre-filled, just press Enter)
+                "",  # host -> default (splunk.example.com)
+                "",  # port -> default (8089)
+                "",  # scheme -> default (https)
+                "",  # TLS -> default (system CA)
+                "",  # auth -> default (token)
+                # Probe succeeds, continue to writer/server
+                "splunk",  # MCP server name
+                "1",  # writer = Cursor
+            ],
+            secrets=["bad-token", "good-token"],
+            keyring_works=False,
+            probe_results=[
+                splunk_probe.ProbeResult(ok=False, error="HTTP 401", auth_mode="token"),
+                splunk_probe.ProbeResult(
+                    ok=True, server_name="lab", version="9.2.0", auth_mode="token"
+                ),
+            ],
+        )
+        rc = wizard_main()
+        assert rc == 0
+        # Only the second (successful) attempt's secret should be in the
+        # credstore -- the bad-token from attempt 1 must have been
+        # overwritten when the user re-prompted.
+        creds = (tmp_path / "config" / "credentials").read_text()
+        assert "SPLUNK_TOKEN=good-token" in creds
+        assert "bad-token" not in creds
+        # Cursor config written with the resolved absolute command path
+        cursor = json.loads(cursor_path.read_text())
+        assert cursor["mcpServers"]["splunk"]["env"]["SPLUNK_HOST"] == "splunk.example.com"
+
+    def test_probe_fail_edit_then_save_anyway(self, monkeypatch, tmp_path: Path) -> None:
+        """Two failed probes back-to-back; user picks Edit then Save-anyway.
+
+        Verifies that Save-anyway after a failed re-attempt still
+        persists -- the existing save-anyway escape hatch is preserved
+        inside the loop.
+        """
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                # Attempt 1 collection
+                "splunk.example.com",
+                "8089",
+                "1",  # https
+                "1",  # system CA
+                "1",  # token
+                # Probe fails -> menu
+                "1",  # Edit
+                # Attempt 2 collection -- accept all defaults
+                "",
+                "",
+                "",
+                "",
+                "",
+                # Probe fails again -> menu, pick Save anyway
+                "2",  # Save anyway
+                "splunk",  # MCP server name
+                "1",  # writer = Cursor
+            ],
+            secrets=["t1", "t2"],
+            keyring_works=False,
+            probe_results=[
+                splunk_probe.ProbeResult(ok=False, error="conn refused", auth_mode="token"),
+                splunk_probe.ProbeResult(ok=False, error="conn refused", auth_mode="token"),
+            ],
+        )
+        rc = wizard_main()
+        assert rc == 0
+        # Save-anyway path persists despite probe failure
+        creds = (tmp_path / "config" / "credentials").read_text()
+        assert "SPLUNK_TOKEN=t2" in creds
+        cursor = json.loads(cursor_path.read_text())
+        assert cursor["mcpServers"]["splunk"]["env"]["SPLUNK_HOST"] == "splunk.example.com"
+
+    def test_probe_fail_retry_budget_exhausted(self, monkeypatch, tmp_path: Path) -> None:
+        """After _PROBE_MAX_ATTEMPTS (3) failed probes the menu degrades to
+        the historical 2-option (save / quit) prompt -- no Edit option.
+
+        We script three failures, two Edit picks, then a Save-anyway
+        from the degraded 2-option menu. The wizard must NOT call
+        probe() a fourth time.
+        """
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                # Attempt 1 collection
+                "splunk.example.com",
+                "8089",
+                "1",
+                "1",
+                "1",
+                # Probe fails -> 3-option menu, pick Edit
+                "1",
+                # Attempt 2 collection (defaults)
+                "",
+                "",
+                "",
+                "",
+                "",
+                # Probe fails -> 3-option menu, pick Edit
+                "1",
+                # Attempt 3 collection (defaults)
+                "",
+                "",
+                "",
+                "",
+                "",
+                # Probe fails -> degraded 2-option menu, pick Save (idx 1)
+                "1",  # 2-option menu: 1=Save anyway, 2=Quit
+                "splunk",
+                "1",  # writer = Cursor
+            ],
+            secrets=["t1", "t2", "t3"],
+            keyring_works=False,
+            probe_results=[
+                splunk_probe.ProbeResult(ok=False, error="boom", auth_mode="token"),
+                splunk_probe.ProbeResult(ok=False, error="boom", auth_mode="token"),
+                splunk_probe.ProbeResult(ok=False, error="boom", auth_mode="token"),
+            ],
+        )
+        rc = wizard_main()
+        assert rc == 0
+        creds = (tmp_path / "config" / "credentials").read_text()
+        # Latest re-prompted secret persists
+        assert "SPLUNK_TOKEN=t3" in creds
+        cursor = json.loads(cursor_path.read_text())
+        assert "splunk" in cursor["mcpServers"]
+
     def test_non_tty_aborts(self, monkeypatch) -> None:
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
         rc = wizard_main()
         assert rc == 2
+
+
+# ---------------------------------------------------------------------------
+# _collect_splunk_config -- previous-attempt pre-fill behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestCollectSplunkConfigPrefill:
+    """When the user picks 'Edit and try again' after a failed probe,
+    the next collection round must pre-fill non-secret answers from
+    the failed attempt as prompt defaults. Secrets (token / password)
+    must always be re-prompted, never recalled.
+    """
+
+    def test_collect_splunk_config_prefills_from_previous(self, monkeypatch) -> None:
+        from spl_bridge.config import SplunkMCPConfig
+        from spl_bridge.setup_wizard import _collect_splunk_config
+
+        previous = SplunkMCPConfig(
+            host="splunk.lab.local",
+            port=8443,
+            scheme="https",
+            ssl_verify="/etc/ssl/lab-ca.pem",  # custom CA bundle
+            splunk_token=None,
+            username="admin",
+            password=None,
+        )
+
+        # Empty input on every prompt -> every answer accepts the
+        # default, which (when `previous` is supplied) is the previous
+        # attempt's value.
+        empty_inputs = iter([""] * 32)
+        monkeypatch.setattr("builtins.input", lambda _p="": next(empty_inputs))
+        monkeypatch.setattr("getpass.getpass", lambda _p="": "fresh-password")
+
+        collected = _collect_splunk_config(previous=previous)
+
+        # Non-secret fields round-trip from previous
+        assert collected.config.host == "splunk.lab.local"
+        assert collected.config.port == 8443
+        assert collected.config.scheme == "https"
+        assert collected.config.ssl_verify == "/etc/ssl/lab-ca.pem"
+        assert collected.config.username == "admin"
+        # Secret was re-prompted (not recalled), came from getpass stub
+        assert collected.config.password == "fresh-password"
+        assert collected.secrets["SPLUNK_PASSWORD"] == "fresh-password"
+        # Token mode wasn't used -- previous picked password mode and the
+        # default carries that forward
+        assert collected.config.splunk_token is None
+
+    def test_collect_splunk_config_first_run_uses_factory_defaults(self, monkeypatch) -> None:
+        """Sanity: passing previous=None keeps the original first-run
+        defaults (localhost / 8089 / https / system CA / token) so the
+        new parameter is fully back-compatible.
+        """
+        from spl_bridge.setup_wizard import _collect_splunk_config
+
+        empty_inputs = iter([""] * 16)
+        monkeypatch.setattr("builtins.input", lambda _p="": next(empty_inputs))
+        monkeypatch.setattr("getpass.getpass", lambda _p="": "tok")
+
+        collected = _collect_splunk_config(previous=None)
+        assert collected.config.host == "localhost"
+        assert collected.config.port == 8089
+        assert collected.config.scheme == "https"
+        assert collected.config.ssl_verify is True
+        assert collected.config.splunk_token == "tok"
+
+
+# ---------------------------------------------------------------------------
+# spl-bridge command resolution (R-launchd-PATH)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSplBridgeCommand:
+    """The wizard must write an absolute path so MCP hosts launched
+    from launchd / Finder (e.g. Claude Desktop on macOS) -- which
+    inherit a stripped-down PATH that omits pipx / venvs / Homebrew
+    Python user-sites -- can spawn the server without a 'No such file
+    or directory' error.
+    """
+
+    def test_uses_shutil_which_when_available(self, monkeypatch) -> None:
+        from spl_bridge.setup_wizard import _resolve_spl_bridge_command
+
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard.shutil.which",
+            lambda name: "/opt/homebrew/bin/spl-bridge" if name == "spl-bridge" else None,
+        )
+        assert _resolve_spl_bridge_command() == "/opt/homebrew/bin/spl-bridge"
+
+    def test_falls_back_to_argv0_when_which_misses(self, monkeypatch) -> None:
+        from spl_bridge.setup_wizard import _resolve_spl_bridge_command
+
+        monkeypatch.setattr("spl_bridge.setup_wizard.shutil.which", lambda _name: None)
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard.sys.argv",
+            ["/Users/alice/.local/pipx/venvs/spl-bridge/bin/spl-bridge", "setup"],
+        )
+        assert (
+            _resolve_spl_bridge_command()
+            == "/Users/alice/.local/pipx/venvs/spl-bridge/bin/spl-bridge"
+        )
+
+    def test_falls_back_to_bare_name_with_warning(self, monkeypatch) -> None:
+        import logging
+
+        from spl_bridge.setup_wizard import _resolve_spl_bridge_command
+
+        monkeypatch.setattr("spl_bridge.setup_wizard.shutil.which", lambda _name: None)
+        # argv[0] is something like "pytest" or "python -m pytest" --
+        # not an absolute path that ends in "spl-bridge".
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard.sys.argv", ["/usr/bin/python3", "-m", "pytest"]
+        )
+
+        # The ``spl_bridge`` logger is intentionally non-propagating
+        # (see spl_bridge/__init__.py) so pytest's root-level ``caplog``
+        # fixture can't see records from it. Attach a temporary handler
+        # to the wizard logger directly so we can assert the warning
+        # actually fires.
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                records.append(record)
+
+        wizard_logger = logging.getLogger("spl_bridge.setup_wizard")
+        handler = _Capture(level=logging.WARNING)
+        wizard_logger.addHandler(handler)
+        try:
+            assert _resolve_spl_bridge_command() == "spl-bridge"
+        finally:
+            wizard_logger.removeHandler(handler)
+
+        assert any("stripped PATH" in r.getMessage() for r in records), (
+            "Fallback path must surface a warning so the user can self-diagnose"
+        )
+
+    def test_argv0_must_be_absolute_to_be_used(self, monkeypatch) -> None:
+        from spl_bridge.setup_wizard import _resolve_spl_bridge_command
+
+        monkeypatch.setattr("spl_bridge.setup_wizard.shutil.which", lambda _name: None)
+        # Relative ./spl-bridge invocation: don't trust it -- could
+        # resolve to anything depending on the host's CWD at launch.
+        monkeypatch.setattr("spl_bridge.setup_wizard.sys.argv", ["./spl-bridge", "setup"])
+        assert _resolve_spl_bridge_command() == "spl-bridge"
+
+    def test_argv0_windows_exe_basename(self, monkeypatch) -> None:
+        from spl_bridge.setup_wizard import _resolve_spl_bridge_command
+
+        monkeypatch.setattr("spl_bridge.setup_wizard.shutil.which", lambda _name: None)
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard.sys.argv",
+            [
+                r"C:\Users\alice\AppData\Local\Programs\Python\Python312\Scripts\spl-bridge.exe",
+                "setup",
+            ],
+        )
+        # On a non-Windows test host, Path() still treats the string as
+        # a PosixPath and is_absolute() is False. Only assert the
+        # behaviour is correct on Windows where the helper was designed
+        # to handle the .exe suffix.
+        if sys.platform == "win32":
+            assert _resolve_spl_bridge_command().endswith("spl-bridge.exe")
+        else:
+            # On POSIX hosts, the backslash path is not absolute, so we
+            # land in the bare-name fallback. The helper does not crash.
+            assert _resolve_spl_bridge_command() == "spl-bridge"
