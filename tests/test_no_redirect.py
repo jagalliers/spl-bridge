@@ -22,7 +22,7 @@ def test_do_request_disables_redirects() -> None:
     fake_response = MagicMock()
     fake_response.status_code = 302
 
-    with patch.object(client._session, "request", return_value=fake_response) as mock_req:
+    with patch("spl_bridge.splunk_client.requests.request", return_value=fake_response) as mock_req:
         result = client._do_request(
             method="GET",
             url="https://splunk.example:8089/services/test",
@@ -44,7 +44,7 @@ def test_call_api_returns_redirect_without_following() -> None:
     redirect.status_code = 302
     redirect.headers = {"Location": "http://evil.example/x"}
 
-    with patch.object(client._session, "request", return_value=redirect) as mock_req:
+    with patch("spl_bridge.splunk_client.requests.request", return_value=redirect) as mock_req:
         response = client.call_api("GET", "services/auth/login")
 
     assert response.status_code == 302

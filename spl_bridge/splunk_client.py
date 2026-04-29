@@ -253,18 +253,24 @@ class SplunkClient:
         # Tracks whether the per-process capability gate has been satisfied.
         self._capability_verified = False
         self._cap_lock = threading.Lock()
-        # R12: reuse a single HTTP session so TLS handshakes and TCP
-        # connections to Splunk's management port are pooled across calls.
-        self._session = requests.Session()
         if config.ssl_verify is False:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        # No persistent ``requests.Session()``: we mirror Splunk's own
+        # reference MCP server (`Splunk_MCP_Server/bin/splunk_api.py`),
+        # which issues each REST call with its own connection.  The
+        # earlier R12 design pooled connections via a shared Session,
+        # but that exposed an intermittent ``urllib3`` keep-alive race
+        # where Splunk Cloud / load-balanced endpoints with short idle
+        # timeouts would close a pooled socket the moment we tried to
+        # reuse it -- surfacing as ``http.client.RemoteDisconnected``
+        # / ``requests.exceptions.ConnectionError("Connection
+        # aborted")``.  Per-call ``requests.request(...)`` trades a
+        # ~50ms TLS handshake per call (negligible at human MCP
+        # cadence) for guaranteed freedom from that race.
 
     def close(self) -> None:
-        """Release pooled HTTP connections (best-effort)."""
-        try:
-            self._session.close()
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("Error while closing requests.Session", exc_info=True)
+        """No-op kept for API back-compat. We no longer pool a Session."""
+        return None
 
     def ensure_capabilities_verified(self, required: set[str] | None = None) -> tuple[bool, str]:
         """Run :py:meth:`check_capabilities` once per process under a lock.
@@ -288,7 +294,13 @@ class SplunkClient:
         data: dict[str, Any] | str | bytes | None,
     ) -> Response:
         try:
-            response = self._session.request(
+            # Per-call ``requests.request(...)`` (no shared Session):
+            # mirrors ``Splunk_MCP_Server/bin/splunk_api.py`` and
+            # avoids the urllib3 pool keep-alive race that surfaced as
+            # ``RemoteDisconnected`` on Splunk Cloud / load-balanced
+            # endpoints.  See ``__init__`` for the full rationale and
+            # the trade-off (~50ms TLS handshake per call).
+            response = requests.request(
                 method=method.upper(),
                 url=url,
                 headers=req_headers,
@@ -653,9 +665,16 @@ class SplunkClient:
 
         try:
             return validate(query)
+        except (requests.Timeout, requests.ConnectionError, SplunkLoginError):
+            # Let ``server._execute_tool`` classify these into the
+            # curated, operationally-useful messages
+            # ("Splunk request timed out" / "Could not connect to
+            # Splunk at host:port" / "Splunk authentication failed")
+            # rather than misattributing them to the safety check.
+            raise
         except Exception:
             logger.exception("SPL validator unexpected failure")
-            return False, _client_safe_error("SPL validation failed (internal error)")
+            return False, _client_safe_error("SPL safety check could not complete")
 
     def is_saved_search_disabled(
         self, name: str, app: str | None = None

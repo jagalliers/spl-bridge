@@ -39,6 +39,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **HTTP transport no longer pools connections.** `SplunkClient` now
+  issues each REST call via `requests.request(...)` instead of a
+  shared `requests.Session()`, mirroring Splunk's own reference MCP
+  server (`Splunk_MCP_Server/bin/splunk_api.py`). This eliminates a
+  long-known `urllib3` keep-alive race on Splunk Cloud / Splunk Show
+  endpoints fronted by load balancers with short idle timeouts
+  (`http.client.RemoteDisconnected: Remote end closed connection
+  without response` → `requests.exceptions.ConnectionError:
+  Connection aborted`), which previously surfaced as the misleading
+  `"Query blocked by safety check: SPL validation failed (internal
+  error)"` because of an over-broad guard in `check_spl_safe`
+  (separately fixed below). Trade-off: each call now pays a fresh
+  TCP+TLS handshake (~50ms typical), which is negligible at
+  interactive MCP cadence and matches the trade-off Splunk's own
+  reference accepts. `SplunkClient.close()` is preserved as a no-op
+  for API back-compat. R12 (single-Session pooling) is reverted; the
+  M-1 `allow_redirects=False` guarantee is preserved verbatim.
 - **Setup wizard now offers edit-and-retry on probe failure.** When
   `GET /services/server/info` fails (wrong host/port, bad credentials,
   TLS mismatch, network blip), the wizard previously offered only a
@@ -77,6 +94,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`check_spl_safe` no longer misattributes transport errors as
+  safety violations.** Previously a `requests.ConnectionError`,
+  `requests.Timeout`, or `SplunkLoginError` raised from the parser
+  endpoint (`services/search/parser`) was caught by an over-broad
+  `except Exception:` in `SplunkClient.check_spl_safe` and surfaced
+  to clients as `"Query blocked by safety check: SPL validation
+  failed (internal error)"`, bypassing the `server._execute_tool`
+  classifier that exists to render curated messages like `"Could not
+  connect to Splunk at host:port"`. Those exception classes now
+  propagate; the broad guard remains only for genuinely unexpected
+  logic faults and surfaces a renamed `"SPL safety check could not
+  complete"` message that is distinguishable from the policy-deny
+  path (`"Forbidden command found: ..."`). Pairs with the
+  Session-pooling change above: dropping the pool removes the
+  intermittent keep-alive race that triggered this misclassification
+  in the first place; the swallow-fix ensures any *real* Splunk
+  outage still surfaces correctly.
 - **Setup wizard now writes the absolute path to `spl-bridge` into MCP
   host configs.** MCP hosts launched from launchd / Finder — notably
   **Claude Desktop on macOS** — inherit a stripped-down `PATH` (only

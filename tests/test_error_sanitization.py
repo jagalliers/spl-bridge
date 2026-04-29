@@ -86,9 +86,8 @@ class TestExportSearchSanitization:
 
         c = _client()
         with (
-            patch.object(
-                c._session,
-                "request",
+            patch(
+                "spl_bridge.splunk_client.requests.request",
                 side_effect=requests.exceptions.ConnectionError(SECRET_BODY),
             ),
             pytest.raises(requests.exceptions.ConnectionError),
@@ -104,9 +103,8 @@ class TestExportSearchSanitization:
         import requests
 
         c = _client()
-        with patch.object(
-            c._session,
-            "request",
+        with patch(
+            "spl_bridge.splunk_client.requests.request",
             side_effect=requests.exceptions.ChunkedEncodingError(SECRET_BODY),
         ):
             out = c.export_search("search index=main")
@@ -136,6 +134,71 @@ class TestCheckSplSafeSanitization:
         with patch.object(c, "call_api", return_value=bad):
             ok, msg = c.check_spl_safe("search index=main", {"search"}, {})
         assert ok is False
+        assert "abc123" not in msg
+        assert "hunter2" not in msg
+        assert "request_id=" in msg
+
+    # ------------------------------------------------------------------
+    # Propagation contract: transport-class exceptions raised from the
+    # parser endpoint must escape ``check_spl_safe`` so that
+    # ``server._execute_tool``'s classifier produces the curated
+    # operationally-useful message ("Could not connect to Splunk at
+    # host:port", "Splunk request timed out", "Splunk authentication
+    # failed") instead of being misattributed as a safety violation.
+    # ------------------------------------------------------------------
+
+    def test_propagates_connection_error(self) -> None:
+        c = _client()
+        with (
+            patch.object(
+                c,
+                "call_api",
+                side_effect=requests.ConnectionError("conn aborted " + SECRET_BODY),
+            ),
+            pytest.raises(requests.ConnectionError),
+        ):
+            c.check_spl_safe("search index=main", {"search"}, {})
+
+    def test_propagates_timeout(self) -> None:
+        c = _client()
+        with (
+            patch.object(
+                c,
+                "call_api",
+                side_effect=requests.Timeout("read timeout " + SECRET_BODY),
+            ),
+            pytest.raises(requests.Timeout),
+        ):
+            c.check_spl_safe("search index=main", {"search"}, {})
+
+    def test_propagates_splunk_login_error(self) -> None:
+        from spl_bridge.auth import SplunkLoginError
+
+        c = _client()
+        with (
+            patch.object(
+                c,
+                "call_api",
+                side_effect=SplunkLoginError("Splunk login failed (HTTP 401)"),
+            ),
+            pytest.raises(SplunkLoginError),
+        ):
+            c.check_spl_safe("search index=main", {"search"}, {})
+
+    def test_logic_error_returns_new_distinguishable_message(self) -> None:
+        """Genuinely unexpected logic faults still surface a sanitized
+        ``(False, msg)`` tuple, but the message is the renamed
+        ``"SPL safety check could not complete"`` -- distinguishable
+        from the policy-deny path (``"Forbidden command found: ..."``)
+        and from the old misleading ``"SPL validation failed (internal
+        error)"`` that previously masked transport faults.
+        """
+        c = _client()
+        with patch.object(c, "call_api", side_effect=TypeError("boom " + SECRET_BODY)):
+            ok, msg = c.check_spl_safe("search index=main", {"search"}, {})
+        assert ok is False
+        assert "SPL safety check could not complete" in msg
+        assert "SPL validation failed" not in msg
         assert "abc123" not in msg
         assert "hunter2" not in msg
         assert "request_id=" in msg
@@ -249,6 +312,51 @@ class TestClassifiedExceptionMessages:
         assert "request_id=" in msg
         assert "abc123" not in msg
         assert "hunter2" not in msg
+
+    def test_check_spl_safe_connection_error_classified(self) -> None:
+        """End-to-end: a ``ConnectionError`` raised from the parser
+        endpoint (e.g. Splunk unreachable) flows through
+        ``server._execute_tool``'s classifier the same way a
+        ``ConnectionError`` from any other Splunk REST call does --
+        it must surface as ``"Could not connect to Splunk at host:port"``,
+        NOT as ``"Query blocked by safety check: SPL validation failed
+        (internal error)"`` (the pre-fix behaviour caused by the
+        over-broad ``except Exception:`` in ``check_spl_safe``).
+        """
+        from spl_bridge.server import ToolExecutionError, _build_mcp_app
+
+        cfg = SplunkMCPConfig(
+            host="splunk.example.invalid",
+            port=8089,
+            splunk_token="t",
+        )
+        client = MagicMock()
+        client.is_saved_search_disabled.return_value = (False, "ok", "search")
+        client.check_spl_safe.side_effect = requests.exceptions.ConnectionError(
+            "Connection aborted: " + SECRET_BODY
+        )
+
+        app = _build_mcp_app(cfg, client)
+        try:
+            tool = app._tool_manager._tools["splunk_run_query"]
+        except (AttributeError, KeyError):  # pragma: no cover - defensive
+            tool = app._tool_manager.list_tools()[0]
+
+        with pytest.raises(ToolExecutionError) as excinfo:
+            tool.fn(query="search index=main")
+        msg = str(excinfo.value)
+
+        assert "Could not connect to Splunk" in msg
+        assert "splunk.example.invalid" in msg
+        assert "8089" in msg
+        assert "request_id=" in msg
+        # No leak of upstream body text.
+        assert "abc123" not in msg
+        assert "hunter2" not in msg
+        # And -- the regression we are guarding against -- we must NOT
+        # have fallen back into the safety-check misattribution.
+        assert "safety check" not in msg.lower()
+        assert "SPL validation" not in msg
 
 
 class TestUnexpectedExceptionGuard:

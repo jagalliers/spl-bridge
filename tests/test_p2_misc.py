@@ -101,19 +101,29 @@ class TestToolRegistrationAssert:
 
 
 # ---------------------------------------------------------------------------
-# R12 - requests.Session reuse
+# Transport - per-call ``requests.request`` (no pooled Session)
+#
+# R12 originally reused a single ``requests.Session`` to pool TCP/TLS
+# across calls. That exposed a ``urllib3`` keep-alive race on Splunk
+# Cloud / load-balanced endpoints (``RemoteDisconnected`` / ``Connection
+# aborted``). The transport now mirrors Splunk's own reference MCP
+# server (``Splunk_MCP_Server/bin/splunk_api.py``) and issues each REST
+# call via ``requests.request(...)``; the contract these tests pin is
+# that we no longer hold a ``_session`` attribute and each ``call_api``
+# invocation produces one outbound ``requests.request`` call.
 # ---------------------------------------------------------------------------
 
 
-class TestSplunkClientSession:
-    def test_uses_single_session_for_pooling(self) -> None:
+class TestSplunkClientTransport:
+    def test_uses_no_session_pooling(self) -> None:
+        """Each ``call_api`` invocation issues its own ``requests.request(...)``
+        - we no longer pool a ``Session``, mirroring Splunk_MCP_Server.
+        """
         cfg = SplunkMCPConfig(host="h", splunk_token="t")
         client = SplunkClient(cfg)
-        import requests
+        assert not hasattr(client, "_session")
 
-        assert isinstance(client._session, requests.Session)
-
-        with patch.object(client._session, "request") as mock_req:
+        with patch("spl_bridge.splunk_client.requests.request") as mock_req:
             mock_req.return_value = MagicMock(status_code=200, text="{}")
             client.call_api("GET", "services/data/indexes")
             client.call_api("GET", "services/data/indexes")
@@ -122,8 +132,10 @@ class TestSplunkClientSession:
     def test_close_is_idempotent(self) -> None:
         cfg = SplunkMCPConfig(host="h", splunk_token="t")
         client = SplunkClient(cfg)
+        # ``close()`` is preserved as an API back-compat no-op now that
+        # there is no ``Session`` to release. Calling it twice must not
+        # raise.
         client.close()
-        # Second close should not raise even though the session is closed.
         client.close()
 
 

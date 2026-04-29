@@ -20,14 +20,19 @@ def _resp(status: int, text: str = "") -> MagicMock:
 
 
 @contextmanager
-def _patch_session(client: SplunkClient, *, side_effect=None, return_value=None):
-    """Patch the per-client requests.Session.request method."""
+def _patch_http_request(*, side_effect=None, return_value=None):
+    """Patch the module-level ``requests.request`` SplunkClient now uses.
+
+    The earlier helper patched ``client._session.request``; that
+    attribute no longer exists since SplunkClient mirrors
+    Splunk_MCP_Server's per-call ``requests.request(...)`` shape.
+    """
     kw = {}
     if side_effect is not None:
         kw["side_effect"] = side_effect
     if return_value is not None:
         kw["return_value"] = return_value
-    with patch.object(client._session, "request", **kw) as m:
+    with patch("spl_bridge.splunk_client.requests.request", **kw) as m:
         yield m
 
 
@@ -52,7 +57,7 @@ class TestPasswordModeReauth:
         # Mock login_with_password used internally by get_auth_header
         # after invalidation
         with (
-            _patch_session(client, side_effect=responses),
+            _patch_http_request(side_effect=responses),
             patch(
                 "spl_bridge.auth.login_with_password",
                 return_value="fresh-key",
@@ -74,7 +79,7 @@ class TestPasswordModeReauth:
         # If we looped, we'd consume the 200 and assert below would fail.
 
         with (
-            _patch_session(client, side_effect=responses),
+            _patch_http_request(side_effect=responses),
             patch(
                 "spl_bridge.auth.login_with_password",
                 return_value="fresh-key",
@@ -91,7 +96,7 @@ class TestPasswordModeReauth:
         auth._session_state["username"] = "admin"
 
         with (
-            _patch_session(client, return_value=_resp(401)),
+            _patch_http_request(return_value=_resp(401)),
             patch(
                 "spl_bridge.auth.login_with_password",
                 side_effect=auth.SplunkLoginError("bad creds"),
@@ -110,7 +115,7 @@ class TestTokenModeNoRetry:
         cfg = SplunkMCPConfig(host="h", splunk_token="t-abc")
         client = SplunkClient(cfg)
 
-        with _patch_session(client, return_value=_resp(401)) as mock_req:
+        with _patch_http_request(return_value=_resp(401)) as mock_req:
             out = client.call_api("GET", "services/server/info")
 
         assert out.status_code == 401
@@ -130,7 +135,7 @@ class TestTokenModeNoRetry:
             cfg = SplunkMCPConfig(host="h", splunk_token="t-abc")
             client = SplunkClient(cfg)
 
-            with _patch_session(client, return_value=_resp(401)):
+            with _patch_http_request(return_value=_resp(401)):
                 client.call_api("GET", "services/server/info")
                 client.call_api("GET", "services/server/info")
                 client.call_api("GET", "services/server/info")

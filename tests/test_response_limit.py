@@ -136,7 +136,7 @@ class TestCallApiEnforcement:
         client = self._client(cap=1024)
         fake = self._fake_response([b"hello"])
 
-        with patch.object(client._session, "request", return_value=fake):
+        with patch("spl_bridge.splunk_client.requests.request", return_value=fake):
             response = client.call_api("GET", "services/test")
 
         assert response.status_code == 200
@@ -148,7 +148,7 @@ class TestCallApiEnforcement:
         client = self._client(cap=128)
         fake = self._fake_response([b"x" * 256])
 
-        with patch.object(client._session, "request", return_value=fake):
+        with patch("spl_bridge.splunk_client.requests.request", return_value=fake):
             response = client.call_api("GET", "services/test")
 
         assert response.status_code == 502
@@ -161,7 +161,7 @@ class TestCallApiEnforcement:
         client = self._client(cap=1024)
         fake = self._fake_response([b"x" * 512, b"y" * 512])
 
-        with patch.object(client._session, "request", return_value=fake):
+        with patch("spl_bridge.splunk_client.requests.request", return_value=fake):
             response = client.call_api("GET", "services/test")
 
         assert response.status_code == 200
@@ -171,7 +171,7 @@ class TestCallApiEnforcement:
         client = self._client(cap=1024)
         fake = self._fake_response([b"x" * 512, b"y" * 512, b"z"])
 
-        with patch.object(client._session, "request", return_value=fake):
+        with patch("spl_bridge.splunk_client.requests.request", return_value=fake):
             response = client.call_api("GET", "services/test")
 
         assert response.status_code == 502
