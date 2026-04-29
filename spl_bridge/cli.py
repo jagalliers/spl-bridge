@@ -8,12 +8,81 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+_TOP_DESCRIPTION = (
+    "Splunk MCP stdio server. Speaks Model Context Protocol over stdio "
+    "to an MCP host (Cursor, Claude Desktop, Claude CLI) and the public "
+    "Splunk REST API on the other side."
+)
+
+_TOP_EPILOG = (
+    "First-time setup:   spl-bridge setup        (interactive wizard)\n"
+    "Verify connection:  spl-bridge doctor       (one-shot REST probe)\n"
+    "Run the server:     spl-bridge serve        (default; usually launched\n"
+    "                                             by the MCP host, not by hand)\n"
+    "\n"
+    "See README.md -> 'Setup' and 'Where credentials live' for the full story."
+)
+
+_SETUP_EPILOG = (
+    "Five steps, with nothing persisted until step 4:\n"
+    "  1. Prereq checks (Python, mcp/requests/platformdirs, keychain backend)\n"
+    "  2. Splunk connection + auth mode (refuses unsafe combinations)\n"
+    "  3. Live probe of /services/server/info before anything is saved\n"
+    "  4. Stores secrets to OS keychain (preferred) or 0600 dotfile (fallback)\n"
+    "  5. Writes the launch entry into your MCP host's JSON config\n"
+    "     (Cursor, Claude Desktop, Claude CLI, or print-only snippet),\n"
+    "     with a timestamped backup of any prior config.\n"
+    "\n"
+    "Requires a TTY -- the wizard refuses to run from a pipe so secrets\n"
+    "cannot be silently fed in via stdin redirection. Re-run anytime to\n"
+    "rotate credentials or change connection metadata; behaviour is\n"
+    "idempotent."
+)
+
+_DOCTOR_EPILOG = (
+    "Reads the same four credential sources the server uses (env -> _FILE\n"
+    "-> OS keychain -> 0600 dotfile) and performs a single GET against\n"
+    "/services/server/info. Exits 0 on success and prints a one-line\n"
+    "diagnostic on failure."
+)
+
+_SERVE_EPILOG = (
+    "Spawns the MCP stdio server. Stdout is reserved for length-framed\n"
+    "JSON-RPC messages; logs go to stderr. Normally launched by the MCP\n"
+    "host (whose JSON config points at this command). For manual\n"
+    "invocation, run with stdout connected to your MCP client."
+)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="spl-bridge", description="Splunk MCP stdio server")
-    sub = parser.add_subparsers(dest="command")
-    sub.add_parser("serve", help="Run the MCP stdio server (default)")
-    sub.add_parser("doctor", help="Test Splunk connectivity")
-    sub.add_parser("setup", help="Interactive setup wizard")
+    parser = argparse.ArgumentParser(
+        prog="spl-bridge",
+        description=_TOP_DESCRIPTION,
+        epilog=_TOP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub = parser.add_subparsers(dest="command", metavar="{setup,doctor,serve}")
+    sub.add_parser(
+        "setup",
+        help="Interactive setup wizard (recommended for first-time install)",
+        description="Interactive setup wizard for spl-bridge.",
+        epilog=_SETUP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub.add_parser(
+        "doctor",
+        help="One-shot Splunk connectivity check",
+        description="Verify the configured Splunk endpoint is reachable.",
+        epilog=_DOCTOR_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sub.add_parser(
+        "serve",
+        help="Run the MCP stdio server (default)",
+        description="Run the MCP stdio server.",
+        epilog=_SERVE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     args = parser.parse_args()
     # R14: invoking the CLI with no subcommand defaults to ``serve``.
     if args.command is None:

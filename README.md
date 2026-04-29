@@ -11,24 +11,130 @@ A small Python server that:
 - Speaks the Model Context Protocol over stdio (JSON-RPC framed on stdout, logs on stderr).
 - Calls the publicly documented Splunk management REST API (typically TCP 8089) using either a bearer token or, in lab-only password mode, a username/password.
 - Enforces a project-curated SPL command allowlist, recursive subsearch validation through Splunk's own parser, row caps, and per-tool sliding-window rate limits.
-- Provides a `doctor` connectivity check and an interactive `setup` wizard that writes config snippets for popular MCP hosts (Cursor, Claude Desktop, Claude CLI).
 
 The tool catalogue exposed to MCP clients wraps a small set of public Splunk REST endpoints (`/services/server/info`, `/services/data/indexes`, `/services/authentication/users`, `/services/server/introspection/kvstore/collectionstats`, `/servicesNS/-/-/saved/searches`, etc.) plus the SPL `| metadata` and `| savedsearch` generating commands. See [`spl_bridge/data/PROVENANCE.md`](spl_bridge/data/PROVENANCE.md) for per-tool source-of-record citations.
 
-## Quick start
+The CLI exposes three subcommands: `setup` (interactive wizard), `doctor` (one-shot connectivity check), and `serve` (the stdio server, also the default).
+
+## Install
 
 > Requires Python 3.10 or newer. Confirm with `python3 --version`; on macOS the bundled `python3` is older than this and `pyenv`, `uv`, or Homebrew Python is needed.
 
 ```bash
-pip install -e .
+pip install 'spl-bridge[keyring]'
+```
+
+The `[keyring]` extra is optional but strongly recommended — it enables OS-keychain credential storage (macOS Keychain / Windows Credential Manager / Linux Secret Service / KWallet). Without it, secrets fall back to a 0600 dotfile (see [Where credentials live](#where-credentials-live)).
+
+For development against a checkout:
+
+```bash
+pip install -e '.[dev,keyring]'
+```
+
+## Setup — pick one path
+
+There are two ways to wire `spl-bridge` to your MCP host. The wizard is recommended for first-time setup on a developer workstation; manual configuration is fully supported and is the right choice for CI runners, Docker/Kubernetes, multi-environment deployments, or any host the wizard doesn't yet target.
+
+The two paths are not exclusive — credentials stored by the wizard work fine when the same `spl-bridge` is launched manually, and vice-versa, because both go through the same four-source resolver described in [Where credentials live](#where-credentials-live).
+
+### A. Recommended: the setup wizard
+
+```bash
+spl-bridge setup
+```
+
+The wizard runs five steps and persists nothing until step 4:
+
+1. **Prereqs** — Python version, `mcp` / `requests` / `platformdirs` importable, OS keychain backend usability.
+2. **Splunk** — host, port, scheme, TLS verification, auth mode (token or username+password), with hard-stops for unsafe combinations (refuses password over plain HTTP; requires explicit `I UNDERSTAND` to send a password to an unverified TLS endpoint).
+3. **Probe** — live `GET /services/server/info` against the credentials you just entered, before persisting anything.
+4. **Credstore** — secrets stored in your OS keychain (preferred) or a 0600 dotfile (fallback). See [Where credentials live](#where-credentials-live) for paths and at-rest protection.
+5. **MCP host** — writes a launch entry into your MCP host's JSON config (Cursor, Claude Desktop, or via `claude mcp add`), with a timestamped backup of any prior config. Falls back to printing a snippet for hosts the wizard doesn't directly target.
+
+What ends up where:
+
+- **OS keychain or 0600 dotfile**: `SPLUNK_TOKEN` (or `SPLUNK_USERNAME` + `SPLUNK_PASSWORD`).
+- **MCP host JSON config** (e.g. `~/.cursor/mcp.json`): only the launch command and the connection metadata (`SPLUNK_HOST`, `SPLUNK_PORT`, `SPLUNK_SCHEME`, optional `SPLUNK_VERIFY_SSL`). **No token, no password.**
+
+The wizard refuses to run if stdin is not a TTY, and never echoes a secret to stdout/stderr.
+
+Sample run (sanitized, abbreviated):
+
+```text
+spl-bridge setup wizard
+Walks you through Splunk creds, secure storage, and MCP host wiring.
+
+== Prerequisites ==
+  ✓ Python version: running 3.13.0 (need >= 3.10)
+  ✓ mcp library: importable
+  ✓ requests library: importable
+  ✓ platformdirs: importable
+  ✓ OS keychain (keyring): backend = keyring.backends.macOS.Keyring
+
+== Splunk connection ==
+Splunk host (FQDN or IP) [localhost]: splunk.example.com
+Splunk REST management port [8089]:
+Connection scheme:
+  1) https (recommended)
+  2) http (lab only)
+Choice [1]:
+TLS verification:
+  1) Verify with system CA bundle (default)
+  2) Verify with a custom CA bundle path
+  3) DISABLE verification (lab only)
+Choice [1]:
+
+== Authentication ==
+  · Token mode is recommended for production.
+Auth mode:
+  1) Splunk auth token (recommended)
+  2) Username + password (lab only)
+Choice [1]:
+Splunk auth token: ********
+
+== Live connectivity test ==
+  · GET https://splunk.example.com:8089/services/server/info (token auth)
+  ✓ Connected to splunk-sh-01 (version 9.4.2)
+
+== Credential storage ==
+  · Backend: keyring (keyring.backends.macOS.Keyring)
+  ✓ Stored SPLUNK_TOKEN
+
+MCP server name [splunk]:
+== MCP host integration ==
+Where should we register spl-bridge?
+  1) Cursor
+  2) Claude Desktop
+  3) Claude CLI
+  4) Print snippet only
+Choice [1]:
+  ✓ Cursor -> /Users/you/.cursor/mcp.json
+  · Backup of previous config at /Users/you/.cursor/mcp.json.bak.20260428T220115
+
+== Summary ==
+  ✓ Splunk: https://splunk.example.com:8089 (auth = token)
+  ✓ Credential store: keyring (keyring.backends.macOS.Keyring)
+  ✓ MCP host: Cursor
+  · Restart your MCP host for the new server to appear.
+```
+
+To rotate a credential or change the connection, re-run `spl-bridge setup` and pick the same MCP server name. The wizard overwrites the keychain entry and updates the JSON config in place, with a fresh timestamped backup.
+
+### B. Manual configuration
+
+Use this path when you're scripting deployment, running in Docker / Kubernetes, integrating with an MCP host the wizard doesn't write for, or simply prefer hand-rolled config.
+
+#### Quick start with environment variables
+
+```bash
+pip install spl-bridge
 
 export SPLUNK_HOST=splunk.example.com
 export SPLUNK_TOKEN=your-splunk-token
 
-spl-bridge doctor
-spl-bridge serve
-# or
-python -m spl_bridge
+spl-bridge doctor   # one-shot connectivity check
+spl-bridge serve    # run the MCP stdio server (or `python -m spl_bridge`)
 ```
 
 > **WARNING — Lab-only password mode.** Combining `SPLUNK_USERNAME`/`SPLUNK_PASSWORD`
@@ -46,9 +152,9 @@ export SPLUNK_PASSWORD=changeme
 export SPLUNK_VERIFY_SSL=false
 ```
 
-## Cursor MCP configuration
+#### Hand-rolled MCP host JSON
 
-Add to your Cursor MCP settings (`.cursor/mcp.json` or workspace config):
+The most common pattern puts the token directly in the host's `env` block:
 
 ```json
 {
@@ -64,6 +170,8 @@ Add to your Cursor MCP settings (`.cursor/mcp.json` or workspace config):
   }
 }
 ```
+
+This works, but it places the token in plaintext on disk in your home directory and the MCP host re-reads it on every restart. The wizard's keychain-backed flow (path A) avoids this.
 
 For lab environments with self-signed certs:
 
@@ -84,7 +192,58 @@ For lab environments with self-signed certs:
 }
 ```
 
-## Environment variables
+For Docker / Kubernetes where the secret is mounted as a file:
+
+```json
+{
+  "mcpServers": {
+    "splunk": {
+      "command": "spl-bridge",
+      "env": {
+        "SPLUNK_HOST": "splunk.example.com",
+        "SPLUNK_TOKEN_FILE": "/run/secrets/splunk_token"
+      }
+    }
+  }
+}
+```
+
+## Where credentials live
+
+`spl-bridge` resolves each credential (`SPLUNK_TOKEN`, `SPLUNK_USERNAME`, `SPLUNK_PASSWORD`) by trying four sources in order. The first non-empty value wins; later sources are not consulted.
+
+| Order | Source | Where | At-rest protection |
+|------:|--------|-------|--------------------|
+| 1 | `$SPLUNK_TOKEN` (or `_USERNAME` / `_PASSWORD`) | Process environment | None. Visible in `/proc/<pid>/environ`, in shell history if `export`ed interactively, and inherited by any child process. Appropriate for CI runners that scrub env on completion. |
+| 2 | `$SPLUNK_TOKEN_FILE` (or `_USERNAME_FILE` / `_PASSWORD_FILE`) | Path read at startup | Whatever the file's filesystem ACLs are. Docker/K8s typically mount these mode 0400; `spl-bridge` reads whatever path you point at. |
+| 3 | OS keychain, service `spl-bridge` | macOS Keychain / Windows Credential Manager / Linux Secret Service or KWallet | **Encrypted by the OS** under the user's login (macOS Keychain, Windows DPAPI). Linux Secret Service depends on the backend (gnome-keyring is encrypted; some KWallet configurations are not). Requires the `[keyring]` extra and an active backend. |
+| 4 | 0600 dotfile | `platformdirs.user_config_dir("spl-bridge") / credentials` — typically `~/Library/Application Support/spl-bridge/credentials` (macOS), `%LOCALAPPDATA%\spl-bridge\credentials` (Windows), `~/.config/spl-bridge/credentials` (Linux/XDG) | **Filesystem ACLs only** (mode 0600 on POSIX). The file is **not encrypted**. `spl-bridge` refuses to read a dotfile whose mode isn't exactly 0600, refuses to follow symlinks (`O_NOFOLLOW`), and refuses files larger than 64 KiB. Writes are atomic via `mkstemp` + `os.replace`. |
+
+The wizard writes to source #3 if a keychain backend is available, otherwise to source #4. It never writes to source #1 or #2; those are yours to manage.
+
+Connection metadata (`SPLUNK_HOST`, `SPLUNK_PORT`, `SPLUNK_SCHEME`, `SPLUNK_VERIFY_SSL`, `SPLUNK_APP`) is **not** stored in the credstore — it lives in the MCP host's JSON config so you can flip environments without touching the keychain.
+
+To inspect what the wizard stored:
+
+```bash
+# macOS Keychain
+security find-generic-password -s spl-bridge -a SPLUNK_TOKEN -w
+
+# Linux (Secret Service via secret-tool)
+secret-tool lookup service spl-bridge username SPLUNK_TOKEN
+
+# Windows
+cmdkey /list:spl-bridge
+
+# Dotfile fallback (any platform)
+cat "$(python3 -c 'import platformdirs; print(platformdirs.user_config_dir("spl-bridge"))')/credentials"
+```
+
+To remove a credential, delete the keychain entry with the equivalent OS tool (`security delete-generic-password`, `secret-tool clear`, `cmdkey /delete`) or remove the line from the dotfile. There is no `spl-bridge unsetup` — the wizard is idempotent, so re-running it with new values overwrites in place.
+
+## Environment variables (reference)
+
+These can be set directly in the shell, in the MCP host's `env` block, or via `_FILE` companions. The wizard sets the connection variables for you and leaves the secrets to the credstore.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -92,7 +251,7 @@ For lab environments with self-signed certs:
 | `SPLUNK_PORT` | `8089` | Management REST port |
 | `SPLUNK_SCHEME` | `https` | `http` or `https` |
 | `SPLUNK_VERIFY_SSL` | `true` | TLS certificate verification. Accepts `true`/`false`, **or a path to a CA bundle (`.pem`)** for self-signed/internal CA setups, e.g. `SPLUNK_VERIFY_SSL=/etc/ssl/certs/my-corp-ca.pem` |
-| `SPLUNK_TOKEN` | — | Splunk auth/bearer token (preferred) |
+| `SPLUNK_TOKEN` | — | Splunk auth/bearer token (preferred). Resolved via the four-source order in [Where credentials live](#where-credentials-live). |
 | `SPLUNK_USERNAME` | — | Username for password auth (lab) |
 | `SPLUNK_PASSWORD` | — | Password for password auth (lab) |
 | `SPLUNK_APP` | — | Default app context for searches |
@@ -107,7 +266,7 @@ For lab environments with self-signed certs:
 | `MCP_MAX_RESPONSE_BYTES` | `67108864` (64 MiB) | Hard cap on a single Splunk REST response body. Over-cap responses are converted to a synthetic HTTP 502 and the body is dropped before reaching the tool layer. Raise only if your environment legitimately returns >64 MiB single-call payloads (very unusual; per-call streaming and `head` row limits are the right fix) |
 | `SPLUNK_ALLOW_PLAINTEXT` | `0` | **Required when** `SPLUNK_SCHEME=http` and a token is configured. Set to `1` to opt-in to sending the bearer token over plain HTTP (lab only). The server always logs a `WARNING` when the scheme is HTTP, regardless of this flag |
 
-**Auth precedence:** If both `SPLUNK_TOKEN` and `SPLUNK_USERNAME`/`SPLUNK_PASSWORD` are set, token mode wins. For each credential variable the direct value wins over its `_FILE` companion.
+**Auth precedence:** If both `SPLUNK_TOKEN` and `SPLUNK_USERNAME`/`SPLUNK_PASSWORD` are set, token mode wins. For each credential variable the direct value wins over its `_FILE` companion, and both env-side options win over the keychain and dotfile (see the four-source order above).
 
 **HTTP scheme.** The server refuses to send a Splunk token over plain HTTP unless `SPLUNK_ALLOW_PLAINTEXT=1` is also set. This catches the common misconfiguration where `SPLUNK_SCHEME=http` is left in place after a copy-paste from a lab `.env`. Username/password mode over `http` was already rejected and remains so. Scheme is HTTP -> always logs a WARNING, regardless of the opt-in flag, so the misconfiguration is visible in operational logs.
 
@@ -132,22 +291,16 @@ The MCP tool names below use `splunk_*` as a descriptive prefix (nominative use,
 
 ### Credential handling
 
-- Secrets are **never written to disk** by this server, and are **redacted from
-  structured logs** (matches against `token`, `password`, `session_key`,
-  `authorization`, `api_key`, `secret`, `bearer` extras).
-- Passwords are exchanged for in-memory session keys via `/services/auth/login`.
-  After a successful login the password reference on the in-process config is
-  cleared as a defence-in-depth measure (Python cannot guarantee zeroisation,
-  see [Known limitations](#known-limitations)).
-- Upstream Splunk error response bodies are **not** surfaced to MCP clients --
-  clients only see a stable, generic message of the form
-  `"Splunk API error (HTTP 500; request_id=abcdef123456)"`. Full diagnostic
-  detail is written to the structured stderr log under that same `request_id`.
+- Where credentials are stored, in what order they're resolved, and which sources are encrypted at rest is documented in full at [Where credentials live](#where-credentials-live).
+- The server itself **never writes a credential to disk**; it only reads from the four sources above. Persistent storage (keychain entry, 0600 dotfile) is performed once by the setup wizard and re-read at every server start.
+- Secrets are **redacted from structured logs** by `MCPJsonFormatter` (matches against `token`, `password`, `session_key`, `authorization`, `api_key`, `secret`, `bearer` extras). You should still treat tokens, passwords, and session keys as "must never appear in any record".
+- Passwords are exchanged for in-memory session keys via `/services/auth/login`. After a successful login the password reference on the in-process config is cleared as a defence-in-depth measure (Python cannot guarantee zeroisation; see [Known limitations](#known-limitations)).
+- Upstream Splunk error response bodies are **not** surfaced to MCP clients — clients only see a stable, generic message of the form `"Splunk API error (HTTP 500; request_id=abcdef123456)"`. Full diagnostic detail is written to the structured stderr log under that same `request_id`.
 - Token mode is preferred for production; password mode is a lab convenience.
 - Credentials are **never** accepted as MCP tool arguments.
 
 > **WARNING:** Never combine `SPLUNK_USERNAME` / `SPLUNK_PASSWORD` with
-> `SPLUNK_VERIFY_SSL=false` outside a fully isolated lab. See [Quick start](#quick-start).
+> `SPLUNK_VERIFY_SSL=false` outside a fully isolated lab. See [Setup → Manual](#b-manual-configuration).
 
 ### SPL safety
 
@@ -189,9 +342,11 @@ The Splunk user/token needs at minimum:
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,keyring]"
 pytest tests/ -v
 ```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for ground rules, DCO sign-off, the optional opt-in test suites (PTY wizard scenarios, Docker, Python matrix), and notes for AI coding assistants.
 
 ## Splunk Cloud notes
 

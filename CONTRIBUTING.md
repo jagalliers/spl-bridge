@@ -128,6 +128,29 @@ Notes:
   silently dispatch with no constraints" is.
 - Squash on merge if your branch has noisy WIP commits.
 
+### Commit trailers (and a note for AI coding assistants)
+
+Two trailers are meaningful in this repo. Anything else is noise.
+
+- **`Signed-off-by:` is required** by the DCO check (see below). Use
+  `git commit -s` so the email matches your commit author exactly;
+  mismatches make the DCO action fail and force a rewrite.
+- **`Co-authored-by:` is only correct when there is a genuinely
+  separate human co-author** of the change. Do **not** add it for
+  yourself, for the AI tool you used, or as a generic "made with X"
+  marker. GitHub renders every `Co-authored-by:` email as a co-author
+  avatar on the commit and PR pages, which surfaces (and permanently
+  archives) whichever GitHub account owns that email --- including
+  alternate accounts of the same human. If you used an AI assistant,
+  a `Made-with: <tool>` line in the body is fine; co-authorship is
+  not.
+
+If you are an AI coding assistant making a commit on behalf of the
+user in this repo: configure the local `user.email` to match the
+identity the user wants attributed (ask if unsure), use `git commit
+-s`, and do **not** append a `Co-authored-by:` trailer unless the
+user has explicitly named another human contributor.
+
 ## Pull requests
 
 Every PR must:
