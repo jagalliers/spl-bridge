@@ -68,8 +68,8 @@ spl-bridge setup
 The wizard runs five steps and persists nothing until step 4:
 
 1. **Prereqs** — Python version, `mcp` / `requests` / `platformdirs` importable, OS keychain backend usability.
-2. **Splunk** — host, port, scheme, TLS verification, auth mode (token or username+password), with hard-stops for unsafe combinations (refuses password over plain HTTP; requires explicit `I UNDERSTAND` to send a password to an unverified TLS endpoint).
-3. **Probe** — live `GET /services/server/info` against the credentials you just entered, before persisting anything.
+2. **Splunk** — host, port, scheme, TLS verification, auth mode (token or username+password), with hard-stops for unsafe combinations (refuses password over plain HTTP; requires explicit `y/N` confirmation — defaulting to *no* — to disable TLS verification and again to send a password to an unverified TLS endpoint).
+3. **Probe** — live `GET /services/server/info` against the credentials you just entered, before persisting anything. If the probe fails, the wizard offers up to 3 edit-and-retry attempts (previous answers pre-filled as defaults — press Enter to keep, type to override; secrets are always re-prompted, never recalled). After the budget is exhausted the menu degrades to the historical save-anyway / quit prompt and points you at `spl-bridge doctor` for iterative testing without re-running setup.
 4. **Credstore** — secrets stored in your OS keychain (preferred) or a 0600 dotfile (fallback). See [Where credentials live](#where-credentials-live) for paths and at-rest protection.
 5. **MCP host** — writes a launch entry into your MCP host's JSON config (Cursor, Claude Desktop, or via `claude mcp add`), with a timestamped backup of any prior config. Falls back to printing a snippet for hosts the wizard doesn't directly target.
 
@@ -141,6 +141,8 @@ Choice [1]:
 ```
 
 To rotate a credential or change the connection, re-run `spl-bridge setup` and pick the same MCP server name. The wizard overwrites the keychain entry and updates the JSON config in place, with a fresh timestamped backup.
+
+> **Why the wizard writes an absolute `command` path.** MCP hosts launched from launchd / Finder — notably **Claude Desktop on macOS** — inherit a stripped-down `PATH` that omits common Python install prefixes (Homebrew Python user-sites under `~/Library/Python/3.x/bin`, pipx venvs, `uv tool` venvs, project venvs). A bare `"command": "spl-bridge"` works in your interactive shell but fails at MCP-host spawn time with `Failed to spawn process: No such file or directory`. The wizard resolves `spl-bridge` via `command -v spl-bridge` (with `sys.argv[0]` as a fallback) and writes the absolute path, so the host can always find the binary regardless of its launch-time `PATH`. If you ever see the spawn error in Claude Desktop's `~/Library/Logs/Claude/mcp.log`, check that the `command` value in `~/Library/Application Support/Claude/claude_desktop_config.json` matches what `command -v spl-bridge` prints in your shell — re-running `spl-bridge setup` with the same MCP server name will repair it in place.
 
 ### B. Manual configuration
 

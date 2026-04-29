@@ -85,9 +85,9 @@ def _build_script() -> list[tuple[str, bytes]]:
         ("Splunk REST management port [8089]:", f"{port}\r".encode()),
         ("Select [1-2]:", b"1\r"),  # https (recommended)
         ("Select [1-3]:", b"3\r"),  # DISABLE verification
-        ("type 'I UNDERSTAND' to confirm", b"I UNDERSTAND\r"),
+        ("Continue with TLS verification disabled?", b"y\r"),
         ("Select [1-2]:", b"2\r"),  # username + password
-        ("type 'I UNDERSTAND' to confirm", b"I UNDERSTAND\r"),
+        ("Continue and send the password to this endpoint?", b"y\r"),
         ("Splunk username [admin]:", f"{username}\r".encode()),
         ("Splunk password:", password.encode() + b"\r"),  # secret (no echo)
         # Step 3: probe runs here, no input

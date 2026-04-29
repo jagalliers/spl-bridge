@@ -9,6 +9,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Setup wizard now offers edit-and-retry on probe failure.** When
+  `GET /services/server/info` fails (wrong host/port, bad credentials,
+  TLS mismatch, network blip), the wizard previously offered only a
+  binary "save anyway / quit" prompt — every fix required restarting
+  `spl-bridge setup` from the top. The failure menu is now a
+  three-way `ask_choice`: **Edit settings and try again** (re-runs
+  the Splunk-connection collection with the previous attempt's
+  non-secret answers pre-filled as defaults — host, port, scheme,
+  TLS verification choice, CA bundle path, auth mode, username),
+  **Save anyway** (existing escape hatch, unchanged), or **Quit
+  without saving** (default, preserves the historical "stray Enter
+  aborts" behaviour). Bounded at 3 attempts; after that the menu
+  degrades to the historical two-option (save / quit) prompt and
+  points the user at `spl-bridge doctor` for further iteration.
+  Secrets (`SPLUNK_TOKEN`, `SPLUNK_PASSWORD`) are **never recalled**
+  across attempts — they're re-prompted via `getpass.getpass` on
+  every collection round, identical to a fresh wizard run, so the
+  secret-lifetime story is unchanged. Hard-stops (http+password,
+  declined risk gates) still propagate as `WizardAbortError` and
+  terminate the wizard with exit code 2 — the user cannot retry
+  past a security gate. Existing exit codes are preserved (0
+  happy-path, 1 quit, 2 abort).
+- **Setup wizard risk-confirmation prompts switched from "type
+  `I UNDERSTAND` to confirm" to plain `y/N` (default no).** The two
+  affected gates — disabling TLS verification, and sending a password
+  to an unverified TLS endpoint — were ceremoniously friction-y for
+  power users without adding any real safety beyond the
+  default-no answer. The full warning text still prints first
+  (now expanded to two lines spelling out the specific MITM /
+  password-capture impact), and a stray Enter still aborts because
+  the prompt defaults to no. Behaviour for token mode and for
+  unattended pipes (still hard-aborted by the TTY guard) is
+  unchanged. The underlying `ui.ask_literal` helper is retained
+  for any future genuinely-destructive prompt that warrants the
+  verbatim ceremony.
+
+### Fixed
+
+- **Setup wizard now writes the absolute path to `spl-bridge` into MCP
+  host configs.** MCP hosts launched from launchd / Finder — notably
+  **Claude Desktop on macOS** — inherit a stripped-down `PATH` (only
+  `/usr/local/bin`, `/opt/homebrew/bin`, `~/.local/bin`, `~/bin`,
+  `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`) and ignore the user's
+  interactive shell `PATH`. Installs that land outside that allowlist
+  (Homebrew Python user-sites, pipx venvs, `uv tool` venvs, project
+  venvs) previously caused Claude Desktop to fail with
+  `Failed to spawn process: No such file or directory` immediately
+  after `initialize`. The wizard now resolves `spl-bridge` via
+  `shutil.which` (with `sys.argv[0]` as a secondary fallback for hosts
+  where `which` is missing) and writes the resolved absolute path into
+  Cursor / Claude Desktop / Claude CLI / snippet output, so the host
+  can spawn the server regardless of its launch-time `PATH`. Falls
+  back to the bare command name with a logged warning if neither
+  source resolves. Existing JSON configs created by older wizard runs
+  can be repaired by re-running `spl-bridge setup` and selecting the
+  same host + server name (the wizard is idempotent and will overwrite
+  in place with a timestamped backup).
+
+### Changed
+
 - **README restructured around the setup wizard.** The Quick Start now
   presents two parallel paths under one "Setup" heading: (A) the
   recommended `spl-bridge setup` wizard with a sample transcript and an

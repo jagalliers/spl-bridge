@@ -48,12 +48,19 @@ def _script(splunk: dict[str, str], bundle_path: str) -> list[tuple[str, bytes]]
         ("Select [1-3]:", b"2\r"),  # custom CA bundle
         ("Path to CA bundle (.pem):", f"{bundle_path}\r".encode()),
         ("Select [1-2]:", b"2\r"),  # username + password
-        ("type 'I UNDERSTAND' to confirm", b"I UNDERSTAND\r"),
+        # Custom CA bundle keeps ssl_verify as a string (not False), so
+        # neither the TLS-disabled nor the password+unverified risk
+        # gate fires here. Go straight to the username prompt.
         ("Splunk username [admin]:", f"{splunk['username']}\r".encode()),
         ("Splunk password:", splunk["password"].encode() + b"\r"),
         # Probe will fail (self-signed cert vs our throwaway bundle).
-        # Decline persistence to keep the host clean.
-        ("Continue anyway and persist these settings?", b"n\r"),
+        # The wizard prints its 3-option failure menu (Edit / Save
+        # anyway / Quit) followed by the standard `Select [1-3]:`
+        # prompt; pick option 3 (Quit without saving) to keep the
+        # host clean. The earlier TLS-verify `Select [1-3]:` was
+        # already consumed by the driver's per-step buffer clear, so
+        # this match is unambiguous.
+        ("Select [1-3]:", b"3\r"),
     ]
 
 
@@ -87,11 +94,10 @@ def run() -> ScenarioReport:
             # The wizard never echoes the CA bundle path (it only logs
             # base_url), so we instead assert that the recovery prompt
             # was reached -- proving the probe ran with our config and
-            # failed cleanly.
-            if (
-                str(bundle) not in cleaned
-                and "Continue anyway and persist these settings?" not in cleaned
-            ):
+            # failed cleanly. The new probe-failure menu prints
+            # "How would you like to proceed?" instead of the previous
+            # binary "Continue anyway?" prompt.
+            if str(bundle) not in cleaned and "How would you like to proceed?" not in cleaned:
                 artefact_problems.append("did not reach probe-failure recovery prompt")
 
             # Nothing should have been persisted past the probe.
