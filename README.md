@@ -20,17 +20,33 @@ The CLI exposes three subcommands: `setup` (interactive wizard), `doctor` (one-s
 
 > Requires Python 3.10 or newer. Confirm with `python3 --version`; on macOS the bundled `python3` is older than this and `pyenv`, `uv`, or Homebrew Python is needed.
 
+The minimum install is one line:
+
+```bash
+pip install spl-bridge
+```
+
+That gives you the server, the `doctor` connectivity check, and the setup wizard. By itself, secrets land in a 0600 dotfile under `~/Library/Application Support/spl-bridge/` (macOS), `%LOCALAPPDATA%\spl-bridge\` (Windows), or `~/.config/spl-bridge/` (Linux). The dotfile is protected by **filesystem permissions only** — it is not encrypted at rest.
+
+For OS-keychain storage instead — macOS Keychain, Windows Credential Manager, Linux Secret Service / KWallet — install with the optional `keyring` add-on:
+
 ```bash
 pip install 'spl-bridge[keyring]'
 ```
 
-The `[keyring]` extra is optional but strongly recommended — it enables OS-keychain credential storage (macOS Keychain / Windows Credential Manager / Linux Secret Service / KWallet). Without it, secrets fall back to a 0600 dotfile (see [Where credentials live](#where-credentials-live)).
+> **What's `[keyring]` and why the quotes?**
+>
+> - **`[keyring]`** is pip's syntax for an *optional dependency group* (declared in our `pyproject.toml`). It tells pip "install `spl-bridge` *plus* the Python `keyring` library, which is the standard cross-platform shim that talks to your OS credential store." The bracket form is purely additive — both commands install the same `spl-bridge` package and CLI; the second one just installs more.
+> - **The single quotes** around `'spl-bridge[keyring]'` are only required by some shells, notably **zsh** (the macOS default), which otherwise treats `[` and `]` as filename glob characters and fails with `zsh: no matches found: spl-bridge[keyring]`. In bash, fish, and PowerShell the quotes are harmless, so the quoted form is the safe copy-paste regardless of platform.
+> - **It's re-runnable.** You can add OS-keychain support to an existing install at any time by re-running `pip install 'spl-bridge[keyring]'`; pip will only install what's missing.
 
-For development against a checkout:
+For development against a checkout, the same `[name]` syntax applies — `.` is the current directory, `[dev,keyring]` selects two extras at once:
 
 ```bash
 pip install -e '.[dev,keyring]'
 ```
+
+Where credentials actually end up at runtime — and the four-source resolution order — is documented in full at [Where credentials live](#where-credentials-live).
 
 ## Setup — pick one path
 
@@ -342,7 +358,7 @@ The Splunk user/token needs at minimum:
 ## Development
 
 ```bash
-pip install -e ".[dev,keyring]"
+pip install -e '.[dev,keyring]'
 pytest tests/ -v
 ```
 

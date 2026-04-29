@@ -49,6 +49,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   required trailer and that `Co-authored-by:` should be reserved for
   genuine human co-authors. Includes explicit guidance for AI agents
   about not appending themselves as co-authors.
+- **README install section rewritten for clarity.** The install now
+  presents two steps -- the bare `pip install spl-bridge` minimum, and
+  the optional `pip install 'spl-bridge[keyring]'` add-on for OS-keychain
+  storage -- with an explicit callout explaining (a) what `[keyring]` is
+  in pip-extras syntax, (b) why the single quotes are required by zsh
+  (the macOS default shell) but harmless elsewhere, and (c) that the
+  extra is purely additive and re-runnable. Resolves the most common
+  source of confusion for first-time users on macOS who hit
+  `zsh: no matches found: spl-bridge[keyring]` from copy-pasting the
+  install line without quotes. The README's `## Development` install
+  line was switched from double-quoted to single-quoted form to match.
+
+### Fixed
+
+- `spl_bridge.setup_wizard.prereqs.check_keyring_backend` now suggests
+  `pip install 'spl-bridge[keyring]'` (single-quoted) in its
+  "package not installed" error message, instead of the bare
+  `pip install spl-bridge[keyring]` form. The bare form is unrunnable
+  in zsh -- it fails with "no matches found" -- so any macOS user whose
+  base install lacked the `[keyring]` extra and ran `spl-bridge setup`
+  would have received a copy-paste-broken hint. Quoted form works in
+  bash, zsh, fish, and PowerShell. No other behaviour change.
 
 ## [0.1.0] - YYYY-MM-DD
 
