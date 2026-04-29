@@ -101,35 +101,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **README gains a Mac-first `Quick start (macOS)` section** between
   `What it is` and `Install`. Three commands take a fresh user from
-  zero to a running setup wizard: `brew install pipx`, `pipx install
-  'spl-bridge[keyring] @ git+...'`, `spl-bridge setup`. `pipx` is
-  recommended over plain `pip` because it sidesteps PEP 668 on
-  Homebrew Python, pulls Python in as a transitive Homebrew
-  dependency (so the user does not need to manage an interpreter
-  separately), and lands the console script at
-  `~/.local/bin/spl-bridge` — which is on the macOS launchd-stripped
-  PATH that Cursor and Claude Desktop see at MCP-server spawn time.
-  Combined with the absolute-path fix above, the wizard writes the
-  resolved absolute path so neither the user nor the host ever has
-  to think about PATH again. The existing `## Install` section is
-  preserved as the long-form rationale (PEP 508 URL form, the
-  `[keyring]` extra explanation, the zsh-quoting note, and the
-  editable dev install). The prereq blockquote in `## Install` was
-  also softened to acknowledge that `pipx` pulls Python in
-  transitively rather than requiring users to install a modern
-  Python first. A footnote covers the one common follow-up footgun
-  (`spl-bridge: command not found` -> `pipx ensurepath` -> reopen
-  terminal) which pipx itself prints during install but which can
-  scroll past easily.
+  zero to a running setup wizard: `brew install uv`, `uv tool install
+  'spl-bridge[keyring] @ git+...'`, `spl-bridge setup`. `uv` is
+  recommended over `pipx` (and over plain `pip`) because the broader
+  Model Context Protocol ecosystem has standardized on it: Anthropic's
+  official build-server quickstart, the modelcontextprotocol/servers
+  reference collection, and every Python MCP server in that repo
+  (mcp-server-git, mcp-server-fetch, mcp-server-time, etc.) all use
+  `uv` / `uvx` / `uv tool install` in their primary install snippets.
+  PyPA still officially recommends `pipx`, so it is documented as the
+  PyPA-canonical alternative in a footnote, but for an MCP server the
+  alignment cost is real — we want the install muscle memory to be
+  the same one users already have for every other Python MCP server
+  on their machine. `uv tool install` lands the console script at
+  `~/.local/bin/spl-bridge` (same destination as `pipx`), and `brew
+  install uv` lands the `uv` / `uvx` binaries at `/opt/homebrew/bin`,
+  on the macOS launchd-stripped PATH that Cursor and Claude Desktop
+  see at MCP-server spawn time. Combined with the absolute-path fix
+  above, the wizard writes the resolved absolute path so neither the
+  user nor the host ever has to think about PATH again.
+  The Quick Start uses Option B layout — single bash block of three
+  commands with no inline comments, followed by a structured "what
+  each command does" bulleted list — for maximum copy-paste UX
+  (matches the Anthropic / modelcontextprotocol convention). The
+  existing `## Install` section is preserved as the long-form
+  rationale (PEP 508 URL form, the `[keyring]` extra explanation,
+  the zsh-quoting note, and the editable dev install). The prereq
+  blockquote in `## Install` was softened to acknowledge that `uv`
+  can fetch a managed Python interpreter on demand rather than
+  requiring users to install a modern Python first. A footnote
+  covers the one common follow-up footgun (`spl-bridge: command not
+  found` -> `uv tool update-shell` -> reopen terminal) which uv
+  itself prints during install but which can scroll past easily.
 - **`scripts/readme_smoketest.sh` header rewritten** so its docstring
   no longer claims to walk the README's "Quick Start" verbatim.
-  Since the new Quick Start uses `pipx install`, the smoketest's
+  Since the new Quick Start uses `uv tool install`, the smoketest's
   literal premise was stale. The script's body and asserts are
   unchanged — they validate the package shape (console script,
-  `python -m` shim, doctor exit codes, setup TTY guard) that pipx
-  and pip both consume identically — so the docstring is reframed
-  to say so explicitly. A pipx-specific smoke can be added on top
-  later if a regression escapes the current surface.
+  `python -m` shim, doctor exit codes, setup TTY guard) that `uv
+  tool install`, `pipx install`, and plain `pip install` all consume
+  identically — so the docstring is reframed to say so explicitly.
+  A uv- or pipx-specific smoke can be layered on top later if a
+  regression escapes the current surface.
 
 ### Changed
 
