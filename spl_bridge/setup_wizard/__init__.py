@@ -177,7 +177,7 @@ def _collect_splunk_config(previous: SplunkMCPConfig | None = None) -> _Collecte
         verify_choice = ui.ask_choice(
             "TLS verification",
             [
-                "Verify with system CA bundle (default)",
+                "Verify with system CA bundle",
                 "Verify with a custom CA bundle path",
                 "DISABLE verification (lab only)",
             ],

@@ -387,6 +387,58 @@ class TestUiGuards:
         assert "hunter2" not in captured.err
 
 
+class TestAskChoiceDefaultMarker:
+    """Regression: only one ``(default)`` should render per choice line.
+
+    Originally the TLS verification prompt baked ``(default)`` into the
+    first option's label *and* let ``ask_choice`` append its own marker,
+    producing ``Verify with system CA bundle (default) (default)`` and
+    misleading users on re-runs where the saved default was option 2 or 3.
+    """
+
+    TLS_CHOICES = [
+        "Verify with system CA bundle",
+        "Verify with a custom CA bundle path",
+        "DISABLE verification (lab only)",
+    ]
+
+    def _choice_lines(self, captured_err: str) -> list[str]:
+        return [line for line in captured_err.splitlines() if line.lstrip().startswith(("1)", "2)", "3)"))]
+
+    def test_each_line_has_at_most_one_default_marker(self, capsys, monkeypatch) -> None:
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+        for default_idx in range(len(self.TLS_CHOICES)):
+            ui.ask_choice("TLS verification", self.TLS_CHOICES, default=default_idx)
+            captured = capsys.readouterr()
+            for line in self._choice_lines(captured.err):
+                assert line.count("(default)") <= 1, (
+                    f"Duplicate (default) marker on line: {line!r}"
+                )
+
+    def test_marker_on_first_option_when_default_is_zero(self, capsys, monkeypatch) -> None:
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+        ui.ask_choice("TLS verification", self.TLS_CHOICES, default=0)
+        captured = capsys.readouterr()
+        lines = self._choice_lines(captured.err)
+        assert lines[0].endswith("(default)")
+        assert "(default)" not in lines[1]
+        assert "(default)" not in lines[2]
+
+    def test_marker_tracks_disabled_default(self, capsys, monkeypatch) -> None:
+        # Mirrors a re-run where the saved config had ssl_verify=False, so
+        # tls_default_idx == 2 and the marker must move to option 3 -- not
+        # stay glued to option 1.
+        monkeypatch.setattr("builtins.input", lambda _prompt="": "")
+        ui.ask_choice("TLS verification", self.TLS_CHOICES, default=2)
+        captured = capsys.readouterr()
+        lines = self._choice_lines(captured.err)
+        assert "(default)" not in lines[0]
+        assert "(default)" not in lines[1]
+        # Line 3 ends with the auto-marker; the literal "(lab only)" stays put.
+        assert lines[2].endswith("(default)")
+        assert "(lab only)" in lines[2]
+
+
 # ---------------------------------------------------------------------------
 # config._resolve_secret precedence
 # ---------------------------------------------------------------------------

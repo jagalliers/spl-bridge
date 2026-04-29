@@ -132,7 +132,7 @@ Connection scheme:
   2) http (lab only)
 Choice [1]:
 TLS verification:
-  1) Verify with system CA bundle (default)
+  1) Verify with system CA bundle
   2) Verify with a custom CA bundle path
   3) DISABLE verification (lab only)
 Choice [1]:
