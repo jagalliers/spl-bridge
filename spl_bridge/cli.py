@@ -40,10 +40,19 @@ _SETUP_EPILOG = (
 )
 
 _DOCTOR_EPILOG = (
-    "Reads the same four credential sources the server uses (env -> _FILE\n"
-    "-> OS keychain -> 0600 dotfile) and performs a single GET against\n"
-    "/services/server/info. Exits 0 on success and prints a one-line\n"
-    "diagnostic on failure."
+    "Default mode (no flags):\n"
+    "  Reads the same four credential sources the server uses (env -> _FILE\n"
+    "  -> OS keychain -> 0600 dotfile) and walks TLS, auth, the search\n"
+    "  parser, and the search export endpoint. Exits 0 on success and\n"
+    "  prints a one-line diagnostic on failure.\n"
+    "\n"
+    "With --hosts:\n"
+    "  Inspects MCP host JSON configs (Cursor user-scope, Claude Desktop)\n"
+    "  for `spl-bridge` entries whose `command` is a bare basename rather\n"
+    "  than an absolute path. PATH-stripped GUI hosts (notably Claude\n"
+    "  Desktop on macOS) cannot resolve a bare `spl-bridge` and fail to\n"
+    "  spawn. Splunk REST is NOT touched in this mode, so it works even\n"
+    "  when the endpoint is unreachable. Exits 1 if any warnings emit."
 )
 
 _SERVE_EPILOG = (
@@ -69,12 +78,22 @@ def main() -> None:
         epilog=_SETUP_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    sub.add_parser(
+    doctor_parser = sub.add_parser(
         "doctor",
-        help="One-shot Splunk connectivity check",
+        help="One-shot Splunk connectivity check (or --hosts MCP config audit)",
         description="Verify the configured Splunk endpoint is reachable.",
         epilog=_DOCTOR_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    doctor_parser.add_argument(
+        "--hosts",
+        action="store_true",
+        help=(
+            "Audit MCP host JSON configs (Cursor, Claude Desktop) for "
+            "spl-bridge entries with bare command names that may fail "
+            "to launch from PATH-stripped GUI hosts. Skips Splunk REST "
+            "checks entirely."
+        ),
     )
     sub.add_parser(
         "serve",
@@ -89,9 +108,14 @@ def main() -> None:
         args.command = "serve"
 
     if args.command == "doctor":
-        from spl_bridge.doctor import run_doctor
+        if args.hosts:
+            from spl_bridge.doctor import run_host_scan
 
-        run_doctor()
+            run_host_scan()
+        else:
+            from spl_bridge.doctor import run_doctor
+
+            run_doctor()
     elif args.command == "setup":
         import sys as _sys
 
