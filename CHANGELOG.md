@@ -15,6 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry it just created, not the entire `~/.cursor/mcp.json`. Avoids echoing
   pre-existing entries (which may carry bearer tokens in their `args`/`env`)
   to the operator's terminal.
+- `splunk_run_saved_search`: when the upstream returns HTTP 400 with a body
+  matching a known missing-token-argument pattern (e.g. `Could not find
+  variable in the argument map`), the client now receives an actionable hint
+  pointing at the `args` parameter instead of the opaque generic wrapper.
+  Upstream body bytes still never reach clients; full detail remains in
+  stderr under the same `request_id`. Other tools and other 4xx/5xx paths
+  retain today's always-redact behaviour.
 
 ## [0.1.0] - YYYY-MM-DD
 
