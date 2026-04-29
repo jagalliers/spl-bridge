@@ -62,7 +62,12 @@ def check_keyring_backend() -> CheckResult:
         return CheckResult(
             "OS keychain (keyring)",
             False,
-            "package not installed -- install with `pip install spl-bridge[keyring]`",
+            # NOTE: single-quote the package spec so the suggestion is safe to
+            # copy-paste into zsh (the macOS default shell), which otherwise
+            # treats `[` and `]` as filename glob characters and rejects the
+            # command with "no matches found". Quotes are harmless in bash,
+            # fish, and PowerShell, so the quoted form works everywhere.
+            "package not installed -- install with `pip install 'spl-bridge[keyring]'`",
         )
     backend = keyring.get_keyring()
     backend_name = type(backend).__module__ + "." + type(backend).__name__
