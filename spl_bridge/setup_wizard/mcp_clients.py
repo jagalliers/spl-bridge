@@ -181,6 +181,22 @@ class ClientWriter(ABC):
     @abstractmethod
     def write(self, server_name: str, launch: SplunkMcpLaunch) -> WriteResult: ...
 
+    def inspect_existing(self, server_name: str) -> dict[str, Any] | None:
+        """Return the current entry registered under ``server_name`` for this
+        target, or ``None`` if no such entry exists.
+
+        Used by the wizard to detect a name collision *before* it issues a
+        write -- so the user can be told what is about to be overwritten and
+        offered a chance to pick a different name. The default implementation
+        returns ``None`` (no persistent state, no collision possible) and is
+        appropriate for writers that don't touch the filesystem.
+
+        Implementations must be read-only: a collision check that mutates
+        state on the way in would defeat the purpose of asking first.
+        """
+        _ = server_name
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Per-host config-path resolvers (public for `spl-bridge doctor --hosts`)
@@ -192,11 +208,87 @@ def cursor_config_path() -> Path:
 
     Public so ``spl_bridge.doctor`` can resolve the same location the
     ``CursorWriter`` writes to. Per-project ``.cursor/mcp.json`` files
-    are intentionally not enumerated here -- the scanner only inspects
-    the user-scope config so it doesn't have to walk arbitrary project
-    trees on the user's machine.
+    are not enumerated by this helper; use :func:`find_cursor_project_config`
+    when you want to discover the nearest project-scope config from a
+    given starting directory.
     """
     return Path.home() / ".cursor" / "mcp.json"
+
+
+# Maximum directories to walk upward when searching for a project-scope
+# ``.cursor/mcp.json``. Plenty of slack for any realistic project depth
+# (most repos sit 2-6 levels under $HOME); the cap exists purely as a
+# guard against pathological symlink loops.
+_PROJECT_WALK_MAX_DEPTH = 32
+
+
+def find_cursor_project_config(start: Path | None = None) -> Path | None:
+    """Walk upward from ``start`` looking for a ``.cursor/mcp.json``.
+
+    Cursor merges project-scope and user-scope configs, with project
+    scope winning on name collisions. The wizard only writes user-scope
+    today, so when a user runs setup from inside a project tree that
+    already has a ``.cursor/mcp.json`` defining the same server name,
+    the project entry will silently shadow ours. This helper is the
+    discovery half of warning the user about that case.
+
+    Walk semantics deliberately mirror what git does for ``.git`` lookups:
+
+    * Start at ``start`` (defaults to ``Path.cwd()``).
+    * Check ``<dir>/.cursor/mcp.json`` at each level; return the first hit.
+    * Stop ascending once we cross ``$HOME`` (so a user running setup
+      from anywhere in their home tree never accidentally picks up a
+      stray ``~/.cursor/mcp.json`` masquerading as project scope, and
+      we never inspect anything *outside* the user's home).
+    * Stop at the filesystem root regardless.
+    * Cap the walk at :data:`_PROJECT_WALK_MAX_DEPTH` iterations as a
+      defense against pathological symlink loops or unusual mount
+      topology -- at 32 levels of nesting we are well past any realistic
+      project layout and entering "something is wrong" territory.
+
+    Returns ``None`` when nothing is found rather than raising, so
+    callers can treat "no project config" as a normal, frequent case.
+    """
+    try:
+        cwd = (start or Path.cwd()).resolve()
+    except (OSError, RuntimeError):
+        # ``cwd`` can be unresolvable if the current directory was
+        # unlinked out from under us, or under odd FS conditions.
+        return None
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        home = None
+
+    # Don't ascend out of $HOME. If the start point is itself outside
+    # $HOME, we still allow inspection of just that directory (and only
+    # that directory) -- but never walk further up, since we have no
+    # business inspecting ``/etc/.cursor/mcp.json`` or similar.
+    bounded_to_home = home is not None and (cwd == home or home in cwd.parents)
+
+    current = cwd
+    for _ in range(_PROJECT_WALK_MAX_DEPTH):
+        candidate = current / ".cursor" / "mcp.json"
+        if candidate.is_file():
+            # Ignore the user-scope file even if the walk happens to
+            # land on $HOME -- ``~/.cursor/mcp.json`` is the user-scope
+            # config that ``cursor_config_path`` returns, not a
+            # project-scope config that would shadow it.
+            if (
+                home is not None
+                and candidate.resolve() == (home / ".cursor" / "mcp.json").resolve()
+            ):
+                return None
+            return candidate
+        parent = current.parent
+        if parent == current:
+            # Reached filesystem root.
+            return None
+        if bounded_to_home and home is not None and current == home:
+            # About to ascend out of $HOME -- stop.
+            return None
+        current = parent
+    return None
 
 
 def claude_desktop_config_path() -> Path:
@@ -252,6 +344,19 @@ class CursorWriter(ClientWriter):
             snippet=merged["mcpServers"][server_name],
         )
 
+    def inspect_existing(self, server_name: str) -> dict[str, Any] | None:
+        # Read-only inspection of the same file ``write`` would touch. If
+        # the file doesn't exist or the server name is absent, returns None.
+        # Reuses ``_read_existing`` so a malformed file raises the same
+        # ``WriterError`` the wizard already handles -- no need for a
+        # separate "soft fail" code path on bad JSON.
+        existing = _read_existing(self._path)
+        servers = existing.get("mcpServers")
+        if not isinstance(servers, dict):
+            return None
+        entry = servers.get(server_name)
+        return entry if isinstance(entry, dict) else None
+
 
 # ---------------------------------------------------------------------------
 # Claude Desktop
@@ -283,10 +388,32 @@ class ClaudeDesktopWriter(ClientWriter):
             snippet=merged["mcpServers"][server_name],
         )
 
+    def inspect_existing(self, server_name: str) -> dict[str, Any] | None:
+        existing = _read_existing(self._path)
+        servers = existing.get("mcpServers")
+        if not isinstance(servers, dict):
+            return None
+        entry = servers.get(server_name)
+        return entry if isinstance(entry, dict) else None
+
 
 # ---------------------------------------------------------------------------
 # Claude CLI (`claude mcp add`)
 # ---------------------------------------------------------------------------
+
+
+def _claude_cli_state_path() -> Path:
+    """Path to the Claude Code CLI's persistent state file.
+
+    All MCP server registrations made via ``claude mcp add`` end up in
+    this file (the per-project keying for local/default scope, the
+    top-level ``mcpServers`` for ``--scope user``). It also accumulates
+    project memory and auth state, so a defensive backup before we
+    invoke the CLI is cheap insurance against the documented merge bugs
+    in the upstream ``claude mcp add`` command (see Anthropic GH
+    #13281, #32939).
+    """
+    return Path.home() / ".claude.json"
 
 
 class ClaudeCLIWriter(ClientWriter):
@@ -301,6 +428,15 @@ class ClaudeCLIWriter(ClientWriter):
             raise WriterError(
                 "`claude` CLI not found on PATH. Install with `npm i -g @anthropic-ai/claude`."
             )
+        # Defensive backup of the CLI's state file *before* delegating
+        # to ``claude mcp add``. The CLI's merge semantics for the
+        # top-level ``~/.claude.json`` have known bugs (Anthropic GH
+        # #13281) and the file also holds project memory + auth state,
+        # so a pre-write copy is the only way for the user to recover
+        # from an upstream regression. ``_backup`` no-ops when the file
+        # doesn't exist yet (first-ever invocation), so this is safe to
+        # call unconditionally.
+        backup = _backup(_claude_cli_state_path())
         # ``--`` is the standard end-of-options marker. Even though the
         # regex above already prevents flag-shaped names from reaching
         # this point, ``--`` is a defense-in-depth that documents intent
@@ -335,9 +471,67 @@ class ClaudeCLIWriter(ClientWriter):
         return WriteResult(
             target=self.name,
             location="(managed by `claude` CLI)",
-            backup_path=None,
+            backup_path=str(backup) if backup else None,
             snippet=launch.to_mcp_json(),
         )
+
+    def inspect_existing(self, server_name: str) -> dict[str, Any] | None:
+        """Best-effort collision check via ``claude mcp get``.
+
+        The CLI exits 0 with the entry printed to stdout when a server
+        of the given name exists at the requested scope, and exits
+        non-zero (typically 1) with a "No MCP server found" message
+        when it doesn't. We treat any non-zero exit as "absent" rather
+        than letting it bubble up: the wizard's collision UX is a
+        belt-and-braces convenience, and we'd rather fall through to
+        the (still-backup-protected) write than abort the wizard
+        because an older ``claude`` CLI doesn't ship ``mcp get``.
+
+        Returns a stub dict ``{"command": <first-line-of-stdout>}`` on
+        a hit so the wizard can show the user what's about to be
+        replaced. We don't try to parse the full output -- the exact
+        format has shifted between Claude Code versions and the only
+        thing the wizard actually needs is "yes there's something
+        here, here is some hint of what it is".
+        """
+        if not self.is_available():
+            return None
+        argv = [
+            "claude",
+            "mcp",
+            "get",
+            "--scope",
+            "user",
+            "--",
+            server_name,
+        ]
+        try:
+            result = subprocess.run(  # noqa: S603 -- inputs are validated literals
+                argv,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            logger.info(
+                "Could not query `claude mcp get` for collision detection: %s. "
+                "Continuing without pre-write collision check.",
+                exc,
+            )
+            return None
+        if result.returncode != 0:
+            return None
+        # Stub entry: the first non-empty line of stdout is the most
+        # useful single-line summary across the CLI version range we
+        # care about. If stdout is empty (some older CLIs return 0
+        # with no output), fall back to a sentinel so the wizard still
+        # surfaces the collision.
+        first_line = next(
+            (line.strip() for line in result.stdout.splitlines() if line.strip()),
+            "<existing entry>",
+        )
+        return {"command": first_line}
 
 
 # ---------------------------------------------------------------------------

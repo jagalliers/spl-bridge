@@ -15,6 +15,7 @@ combinations (http + password, https-no-verify + password).
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import sys
@@ -28,10 +29,12 @@ from . import credstore, prereqs, splunk_probe, ui
 from .credstore import CredStore, CredStoreError
 from .mcp_clients import (
     ClientWriter,
+    CursorWriter,
     SplunkMcpLaunch,
     WriterError,
     WriteResult,
     all_writers,
+    find_cursor_project_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -43,6 +46,15 @@ logger = logging.getLogger(__name__)
 # keeps the wizard's worst-case runtime predictable and the test
 # matrix tractable.
 _PROBE_MAX_ATTEMPTS = 3
+
+# Hard cap on collision-rename rounds. After the budget the wizard
+# aborts cleanly rather than letting the user spin forever; the loop
+# follows the same finite-bound pattern as ``_PROBE_MAX_ATTEMPTS`` so
+# the wizard's worst-case runtime stays predictable. Three rounds is
+# enough for the realistic case ("oh, ``splunk`` is taken? try
+# ``splunk-bridge``... taken too? try ``splunk-corp``") without
+# encouraging brute-force probing.
+_COLLISION_MAX_RENAMES = 3
 
 ProbeFailureChoice = Literal["edit", "save", "quit"]
 
@@ -370,11 +382,139 @@ def _build_launch(config: SplunkMCPConfig) -> SplunkMcpLaunch:
     return SplunkMcpLaunch(command=_resolve_spl_bridge_command(), args=[], env=env)
 
 
+def _resolve_server_name(writer: ClientWriter, initial: str) -> str | None:
+    """Resolve a final, user-confirmed MCP server name for ``writer``.
+
+    On entry the wizard has already collected the user's first-pick name
+    (default ``splunk``). This helper bounces it through a collision
+    check against the writer and -- if the chosen name already exists in
+    the target's persistent state -- offers the user three options:
+
+    * **Overwrite** -- proceed with the original name. The writer's own
+      backup-file machinery is the fallback for recovery; we surface
+      that path in the post-write summary, so users always have a way
+      back even when they pick this option.
+    * **Pick a different name** -- re-prompt with a non-colliding
+      default suggestion (``<original>-bridge``) and re-check. The
+      rename loop is bounded by :data:`_COLLISION_MAX_RENAMES` so a
+      misconfigured / obstinate target can never spin the wizard
+      indefinitely.
+    * **Quit without writing** -- abort cleanly. Returns ``None`` so
+      the caller can propagate exit code 1 without any partial work.
+
+    Returns the final agreed name on success, or ``None`` if the user
+    asked to quit (or the rename budget was exhausted).
+    """
+    name = initial
+    for attempt in range(_COLLISION_MAX_RENAMES):
+        existing = writer.inspect_existing(name)
+        if existing is None:
+            return name
+        ui.warn(f"An MCP server named {name!r} already exists in {writer.name}.")
+        # Surface a single useful field (``command``) so the user can
+        # tell whether the conflict is "my old spl-bridge install" vs
+        # "a totally different vendor's MCP server with the same name".
+        cmd = existing.get("command") if isinstance(existing, dict) else None
+        if isinstance(cmd, str) and cmd:
+            ui.info(f"Current command: {cmd}")
+        else:
+            ui.info("Current command: <unknown>")
+        # Default index 2 (Quit) preserves the wizard-wide convention
+        # that a stray Enter at a destructive prompt aborts rather
+        # than commits.
+        choice = ui.ask_choice(
+            "How would you like to proceed?",
+            [
+                "Overwrite the existing entry (a backup will still be written)",
+                "Pick a different name",
+                "Quit without writing",
+            ],
+            default=2,
+        )
+        if choice.startswith("Overwrite"):
+            return name
+        if choice.startswith("Quit"):
+            return None
+        # "Pick a different name". Suggest a non-colliding default
+        # derived from the *original* name so the user doesn't end up
+        # with cascading suffixes like splunk-bridge-bridge-bridge.
+        if attempt < _COLLISION_MAX_RENAMES - 1:
+            suggestion = f"{initial}-bridge"
+            name = ui.ask("New MCP server name", default=suggestion)
+            if not name:
+                # ``ui.ask`` returns the default if the input is empty,
+                # so an empty result here means the user typed only
+                # whitespace AND no default was honoured -- treat as
+                # an explicit abort to avoid an infinite tight loop.
+                ui.warn("Empty server name -- aborting without writing.")
+                return None
+    ui.warn(
+        f"Tried {_COLLISION_MAX_RENAMES} names and each was already taken; "
+        "aborting without writing."
+    )
+    return None
+
+
+def _warn_cursor_project_shadow(server_name: str) -> None:
+    """If a Cursor project-scope config near the wizard's cwd defines the
+    same ``server_name``, warn the user that it will shadow the user-scope
+    entry we just wrote.
+
+    Cursor merges project-scope (``<project>/.cursor/mcp.json``) and
+    user-scope (``~/.cursor/mcp.json``) configs, with the project-scope
+    entry winning on name collisions. The wizard only writes user-scope,
+    so the user can be left wondering "I ran setup, why is my old
+    server still being used?" when their workspace happens to have a
+    project-scope entry for the same name. Surfacing this once at the
+    end of a successful write turns a mystifying support question into
+    a one-line self-diagnosis.
+
+    Silent on every "everything's fine" branch (no project file, file
+    doesn't have ``mcpServers``, name doesn't collide, file is
+    unreadable) -- the wizard has already succeeded and we don't want
+    to manufacture noise.
+    """
+    project_path = find_cursor_project_config()
+    if project_path is None:
+        return
+    try:
+        text = project_path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not text.strip():
+        return
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # A malformed project config is the user's problem to fix in
+        # their editor, not ours to second-guess from the wizard.
+        return
+    if not isinstance(data, dict):
+        return
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    if server_name not in servers:
+        return
+    ui.warn(
+        f"Cursor project-scope config at {project_path} also defines "
+        f"{server_name!r}; that entry will shadow the user-scope entry "
+        "we just wrote when this workspace is opened in Cursor."
+    )
+    ui.info(
+        "To use the entry we just wrote in this workspace, either remove "
+        f"the {server_name!r} entry from {project_path}, or rename one "
+        "of the two so they don't collide."
+    )
+
+
 def _run_writer(writer: ClientWriter, server_name: str, launch: SplunkMcpLaunch) -> WriteResult:
     result = writer.write(server_name, launch)
     ui.ok(f"{writer.name} -> {result.location}")
     if result.backup_path:
         ui.info(f"Backup of previous config at {result.backup_path}")
+    if isinstance(writer, CursorWriter):
+        _warn_cursor_project_shadow(server_name)
     return result
 
 
@@ -459,6 +599,16 @@ def main() -> int:
 
         server_name = ui.ask("MCP server name", default="splunk")
         writer = _select_writer()
+        # Collision check before we build the launch / commit any
+        # changes to the host's MCP config. The resolver may re-prompt
+        # for a different name, or return None if the user picked Quit
+        # / exhausted the rename budget; in either case nothing has
+        # been written yet, so we can exit cleanly.
+        resolved_name = _resolve_server_name(writer, server_name)
+        if resolved_name is None:
+            ui.fail("No MCP host changes made.")
+            return 1
+        server_name = resolved_name
         launch = _build_launch(collected.config)
         write_result = _run_writer(writer, server_name, launch)
 

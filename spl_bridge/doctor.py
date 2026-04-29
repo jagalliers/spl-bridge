@@ -33,6 +33,7 @@ from spl_bridge.logging_config import configure_logging
 from spl_bridge.setup_wizard.mcp_clients import (
     claude_desktop_config_path,
     cursor_config_path,
+    find_cursor_project_config,
 )
 from spl_bridge.splunk_client import SplunkClient
 
@@ -207,8 +208,69 @@ def _scan_one_config(target_name: str, config_path: Path) -> int:
     return warnings
 
 
+def _server_names(config_path: Path) -> set[str]:
+    """Return the set of MCP server names declared in a config file.
+
+    Tolerant of all the same shapes as :func:`_scan_one_config` (missing
+    file, empty file, malformed JSON, missing or non-dict ``mcpServers``
+    section). Returns an empty set in every "nothing to compare against"
+    case so callers don't need to special-case Nones.
+    """
+    if not config_path.is_file():
+        return set()
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    if not text.strip():
+        return set()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return set()
+    return {name for name in servers if isinstance(name, str)}
+
+
+def _scan_cursor_project_shadowing(user_path: Path, project_path: Path) -> int:
+    """Warn for every MCP server name defined in *both* the Cursor
+    user-scope config and the discovered project-scope config.
+
+    Cursor's documented merge rule is "project scope wins on name
+    collision", so a project-scope entry silently shadows whatever the
+    user-scope file (which the wizard writes to) has under the same
+    name. ``spl-bridge doctor --hosts`` is an excellent place to
+    surface this: the user is already troubleshooting "why isn't my
+    spl-bridge entry being used?" and the answer is one diff away.
+
+    Returns the count of shadowing warnings emitted. Returns 0 when
+    either side is empty / missing / unreadable -- shadowing requires
+    both sides to actually contain entries.
+    """
+    user_names = _server_names(user_path)
+    project_names = _server_names(project_path)
+    overlap = sorted(user_names & project_names)
+    for name in overlap:
+        logger.warning(
+            "Cursor: project-scope entry %r in %s shadows the user-scope "
+            "entry of the same name in %s. Cursor merges project + user "
+            "scope with project winning on collision; this workspace will "
+            "not see the user-scope entry. Rename one side or remove the "
+            "project entry to resolve.",
+            name,
+            project_path,
+            user_path,
+        )
+    return len(overlap)
+
+
 def run_host_scan() -> None:
-    """Scan known MCP host configs for bare-command spl-bridge entries.
+    """Scan known MCP host configs for bare-command spl-bridge entries
+    and project-scope shadowing of the user-scope Cursor entry.
 
     Logs each finding to stderr (info for clean, warning for suspect)
     and exits 1 if any warnings were emitted. The Splunk REST surface
@@ -219,6 +281,12 @@ def run_host_scan() -> None:
 
     * Cursor user-scope config (``~/.cursor/mcp.json``)
     * Claude Desktop per-OS config
+    * Cursor project-scope config (``<cwd-or-ancestor>/.cursor/mcp.json``)
+      when one is found above the current working directory. Also
+      cross-checked against the user-scope config for name shadowing,
+      because Cursor's project + user merge rule means a project entry
+      silently wins over what the wizard wrote -- a frequent source of
+      "I ran setup but Cursor still uses the old server" confusion.
 
     Claude Code (the ``claude`` CLI) is not scanned because its
     persistent registration lives in ``~/.claude.json`` under a schema
@@ -226,13 +294,18 @@ def run_host_scan() -> None:
     ``claude mcp list --json`` and is left as a future enhancement.
     """
     configure_logging()
+    cursor_user_path = cursor_config_path()
     targets: list[tuple[str, Path]] = [
-        ("Cursor", cursor_config_path()),
+        ("Cursor", cursor_user_path),
         ("Claude Desktop", claude_desktop_config_path()),
     ]
     total_warnings = 0
     for name, path in targets:
         total_warnings += _scan_one_config(name, path)
+    project_path = find_cursor_project_config()
+    if project_path is not None:
+        total_warnings += _scan_one_config("Cursor (project)", project_path)
+        total_warnings += _scan_cursor_project_shadowing(cursor_user_path, project_path)
     if total_warnings:
         logger.error(
             "Found %d MCP host config issue(s); see warnings above for remediation.",

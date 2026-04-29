@@ -237,7 +237,15 @@ class TestClaudeDesktopWriter:
 
 
 class TestClaudeCLIWriter:
-    def test_invokes_claude_mcp_add(self) -> None:
+    def test_invokes_claude_mcp_add(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Redirect the CLI state-file backup target away from the real
+        # ``~/.claude.json`` -- otherwise the test would either copy
+        # (and hard-link inode-bump) the user's actual file or fail on
+        # macOS sandboxes that deny writes there.
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard.mcp_clients._claude_cli_state_path",
+            lambda: tmp_path / "claude.json",
+        )
         writer = mcp_clients.ClaudeCLIWriter()
         launch = mcp_clients.SplunkMcpLaunch(
             command="spl-bridge",
@@ -312,6 +320,351 @@ class TestSnippetPrinter:
         result = writer.write("splunk", launch)
         assert result.target == "Print snippet only"
         assert result.snippet == {"mcpServers": {"splunk": {"command": "spl-bridge", "args": []}}}
+
+
+# ---------------------------------------------------------------------------
+# Writer.inspect_existing -- collision-detection prerequisite for the
+# wizard's pre-write conflict UX. Each writer must report whether a name
+# is currently registered in its target, without mutating any state.
+# ---------------------------------------------------------------------------
+
+
+class TestInspectExistingCursor:
+    def test_returns_entry_when_name_present(self, tmp_path: Path) -> None:
+        path = tmp_path / "mcp.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "splunk": {"command": "old-spl-bridge", "args": ["--legacy"]},
+                        "other": {"command": "npx"},
+                    }
+                }
+            )
+        )
+        writer = mcp_clients.CursorWriter(path=path)
+        existing = writer.inspect_existing("splunk")
+        assert existing == {"command": "old-spl-bridge", "args": ["--legacy"]}
+
+    def test_returns_none_when_name_absent(self, tmp_path: Path) -> None:
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {"other": {"command": "npx"}}}))
+        writer = mcp_clients.CursorWriter(path=path)
+        assert writer.inspect_existing("splunk") is None
+
+    def test_returns_none_when_file_missing(self, tmp_path: Path) -> None:
+        # Pre-existing first-time-setup scenario: the file simply doesn't
+        # exist yet. Inspect must NOT create the file as a side effect --
+        # it has to stay a pure read-only check.
+        path = tmp_path / "mcp.json"
+        writer = mcp_clients.CursorWriter(path=path)
+        assert writer.inspect_existing("splunk") is None
+        assert not path.exists()
+
+    def test_returns_none_when_no_mcpservers_section(self, tmp_path: Path) -> None:
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"someOtherKey": True}))
+        writer = mcp_clients.CursorWriter(path=path)
+        assert writer.inspect_existing("splunk") is None
+
+    def test_returns_none_when_entry_is_not_a_dict(self, tmp_path: Path) -> None:
+        # Edge case: a malformed-but-parseable config where the named
+        # entry is a stringified value instead of a dict. Treat as
+        # absent rather than returning the bogus value, so the wizard's
+        # UI can't dereference it as an entry.
+        path = tmp_path / "mcp.json"
+        path.write_text(json.dumps({"mcpServers": {"splunk": "not-a-dict"}}))
+        writer = mcp_clients.CursorWriter(path=path)
+        assert writer.inspect_existing("splunk") is None
+
+    def test_propagates_writer_error_on_malformed_json(self, tmp_path: Path) -> None:
+        # Same defensive behaviour as ``write``: a file the user has
+        # broken in their editor must surface as a WriterError rather
+        # than be silently ignored, so they can't sleep-walk past a
+        # config corruption.
+        path = tmp_path / "mcp.json"
+        path.write_text("{not json")
+        writer = mcp_clients.CursorWriter(path=path)
+        with pytest.raises(mcp_clients.WriterError):
+            writer.inspect_existing("splunk")
+
+    def test_inspect_does_not_mutate_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "mcp.json"
+        contents = json.dumps({"mcpServers": {"splunk": {"command": "old"}}})
+        path.write_text(contents)
+        writer = mcp_clients.CursorWriter(path=path)
+        writer.inspect_existing("splunk")
+        # Bytewise equality: no formatting change, no .bak side effect.
+        assert path.read_text() == contents
+        assert list(tmp_path.iterdir()) == [path]
+
+
+class TestInspectExistingClaudeDesktop:
+    def test_returns_entry_when_name_present(self, tmp_path: Path) -> None:
+        path = tmp_path / "claude_desktop_config.json"
+        path.write_text(json.dumps({"mcpServers": {"splunk": {"command": "old-spl-bridge"}}}))
+        writer = mcp_clients.ClaudeDesktopWriter(path=path)
+        assert writer.inspect_existing("splunk") == {"command": "old-spl-bridge"}
+
+    def test_returns_none_when_file_missing(self, tmp_path: Path) -> None:
+        writer = mcp_clients.ClaudeDesktopWriter(path=tmp_path / "claude_desktop_config.json")
+        assert writer.inspect_existing("splunk") is None
+
+
+class TestInspectExistingSnippetPrinter:
+    def test_always_returns_none(self) -> None:
+        # SnippetPrinter has no persistent state -- collision checks are
+        # meaningless and must always say "no conflict".
+        writer = mcp_clients.SnippetPrinter()
+        assert writer.inspect_existing("splunk") is None
+        assert writer.inspect_existing("anything") is None
+
+
+class TestInspectExistingClaudeCLI:
+    def test_hit_returns_stub_dict_with_command_field(self) -> None:
+        # `claude mcp get` exits 0 on a hit and prints a description to
+        # stdout. We surface the first non-empty line as the ``command``
+        # so the wizard's UX has something to show the user.
+        writer = mcp_clients.ClaudeCLIWriter()
+        with (
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.shutil.which",
+                return_value="/usr/local/bin/claude",
+            ),
+            patch("spl_bridge.setup_wizard.mcp_clients.subprocess.run") as run,
+        ):
+            run.return_value = MagicMock(
+                returncode=0,
+                stdout="splunk:\n  Command: old-spl-bridge --legacy\n",
+                stderr="",
+            )
+            result = writer.inspect_existing("splunk")
+        assert isinstance(result, dict)
+        assert result.get("command")  # truthy summary line
+        argv = run.call_args[0][0]
+        # Must use --scope user (matching what we write to) and the --
+        # end-of-options marker so a future hostile name can't be
+        # interpreted as a flag.
+        assert argv[0:5] == ["claude", "mcp", "get", "--scope", "user"]
+        assert argv[5] == "--"
+        assert argv[6] == "splunk"
+
+    def test_miss_returns_none(self) -> None:
+        # Non-zero exit means "no such server", treat as absent.
+        writer = mcp_clients.ClaudeCLIWriter()
+        with (
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.shutil.which",
+                return_value="/usr/local/bin/claude",
+            ),
+            patch("spl_bridge.setup_wizard.mcp_clients.subprocess.run") as run,
+        ):
+            run.return_value = MagicMock(returncode=1, stdout="", stderr="No MCP server found")
+            assert writer.inspect_existing("splunk") is None
+
+    def test_returns_none_when_cli_not_available(self) -> None:
+        writer = mcp_clients.ClaudeCLIWriter()
+        with patch("spl_bridge.setup_wizard.mcp_clients.shutil.which", return_value=None):
+            # No subprocess call should be attempted; the writer must
+            # short-circuit to None to keep the wizard moving.
+            assert writer.inspect_existing("splunk") is None
+
+    def test_timeout_treated_as_unknown(self) -> None:
+        import subprocess as _sp
+
+        writer = mcp_clients.ClaudeCLIWriter()
+        with (
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.shutil.which",
+                return_value="/usr/local/bin/claude",
+            ),
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.subprocess.run",
+                side_effect=_sp.TimeoutExpired(cmd="claude", timeout=10),
+            ),
+        ):
+            # Inspect must not raise -- the wizard's collision UX is a
+            # convenience and a hung CLI shouldn't kill the wizard.
+            assert writer.inspect_existing("splunk") is None
+
+    def test_zero_exit_with_empty_stdout_still_signals_collision(self) -> None:
+        # Older CLI versions can return 0 with no body. We treat that as
+        # "yes, something exists" with a sentinel command string so the
+        # wizard surfaces the collision rather than silently overwriting.
+        writer = mcp_clients.ClaudeCLIWriter()
+        with (
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.shutil.which",
+                return_value="/usr/local/bin/claude",
+            ),
+            patch("spl_bridge.setup_wizard.mcp_clients.subprocess.run") as run,
+        ):
+            run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            result = writer.inspect_existing("splunk")
+        assert isinstance(result, dict)
+        assert "command" in result
+
+
+# ---------------------------------------------------------------------------
+# ClaudeCLIWriter -- defensive backup of ~/.claude.json before invoking
+# the CLI. Anthropic's `claude mcp add` has documented merge bugs (GH
+# #13281) and the file holds project memory + auth state, so a pre-write
+# copy is the user's only recovery path if the upstream merge regresses.
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeCLIWriterBackup:
+    def test_backs_up_existing_claude_json_before_subprocess(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state_path = tmp_path / "claude.json"
+        state_path.write_text('{"existing": "state"}')
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard.mcp_clients._claude_cli_state_path",
+            lambda: state_path,
+        )
+        # The subprocess.run mock asserts the backup happens *before*
+        # invocation by recording the file's contents at call time --
+        # if backup were post-write we'd see the CLI's new contents,
+        # not the original.
+        seen_backups: list[Path] = []
+
+        def _record(*_args: object, **_kwargs: object) -> MagicMock:
+            # _backup names the file ``<orig>.bak.<timestamp>`` so the
+            # final ``Path.suffix`` is the timestamp, not ``.bak`` --
+            # check by substring instead.
+            seen_backups.extend(p for p in tmp_path.iterdir() if ".bak." in p.name)
+            return MagicMock(returncode=0, stderr="")
+
+        with (
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.shutil.which",
+                return_value="/usr/local/bin/claude",
+            ),
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.subprocess.run",
+                side_effect=_record,
+            ),
+        ):
+            writer = mcp_clients.ClaudeCLIWriter()
+            result = writer.write("splunk", mcp_clients.SplunkMcpLaunch(command="spl-bridge"))
+        # Exactly one .bak file with the timestamped suffix from _backup.
+        bak_files = [p for p in tmp_path.iterdir() if ".bak." in p.name]
+        assert len(bak_files) == 1, bak_files
+        # Backup existed at the time subprocess.run fired.
+        assert seen_backups, "backup must exist before `claude mcp add` is invoked"
+        # Backup contents are the pre-existing state, untouched.
+        assert bak_files[0].read_text() == '{"existing": "state"}'
+        # WriteResult propagates the backup path so the wizard can
+        # surface it to the user.
+        assert result.backup_path == str(bak_files[0])
+
+    def test_no_backup_when_claude_json_missing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # First-time use: file doesn't exist yet, _backup returns None,
+        # WriteResult.backup_path is None, no .bak left lying around.
+        state_path = tmp_path / "claude.json"
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard.mcp_clients._claude_cli_state_path",
+            lambda: state_path,
+        )
+        with (
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.shutil.which",
+                return_value="/usr/local/bin/claude",
+            ),
+            patch("spl_bridge.setup_wizard.mcp_clients.subprocess.run") as run,
+        ):
+            run.return_value = MagicMock(returncode=0, stderr="")
+            writer = mcp_clients.ClaudeCLIWriter()
+            result = writer.write("splunk", mcp_clients.SplunkMcpLaunch(command="spl-bridge"))
+        assert result.backup_path is None
+        assert list(tmp_path.iterdir()) == []  # no .bak files manufactured
+
+
+# ---------------------------------------------------------------------------
+# find_cursor_project_config -- walk semantics for project-scope discovery
+# ---------------------------------------------------------------------------
+
+
+class TestFindCursorProjectConfig:
+    def test_finds_nearest_in_walk_up(self, tmp_path: Path) -> None:
+        # tmp_path/proj/.cursor/mcp.json is the target; we search from
+        # tmp_path/proj/sub/deep/inner and expect the walk to land on
+        # the nearest ancestor file rather than searching arbitrarily.
+        cursor_dir = tmp_path / "proj" / ".cursor"
+        cursor_dir.mkdir(parents=True)
+        target = cursor_dir / "mcp.json"
+        target.write_text("{}")
+        deep = tmp_path / "proj" / "sub" / "deep" / "inner"
+        deep.mkdir(parents=True)
+        found = mcp_clients.find_cursor_project_config(start=deep)
+        assert found is not None
+        assert found.resolve() == target.resolve()
+
+    def test_returns_none_when_nothing_found(self, tmp_path: Path) -> None:
+        deep = tmp_path / "no" / "cursor" / "config" / "anywhere"
+        deep.mkdir(parents=True)
+        assert mcp_clients.find_cursor_project_config(start=deep) is None
+
+    def test_finds_at_start_dir_itself(self, tmp_path: Path) -> None:
+        cursor_dir = tmp_path / ".cursor"
+        cursor_dir.mkdir()
+        target = cursor_dir / "mcp.json"
+        target.write_text("{}")
+        assert mcp_clients.find_cursor_project_config(start=tmp_path).resolve() == target.resolve()
+
+    def test_ignores_user_scope_config_at_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # If the walk happens to land on the user-scope config (e.g. the
+        # user ran setup from $HOME itself), we must NOT report it as a
+        # project-scope file -- otherwise we'd warn about every entry
+        # shadowing itself.
+        fake_home = tmp_path / "home"
+        cursor_dir = fake_home / ".cursor"
+        cursor_dir.mkdir(parents=True)
+        (cursor_dir / "mcp.json").write_text("{}")
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+        assert mcp_clients.find_cursor_project_config(start=fake_home) is None
+
+    def test_does_not_walk_above_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A `.cursor/mcp.json` placed *above* $HOME must never be picked
+        # up: the walk must stop at the $HOME boundary so we don't go
+        # rummaging through /Users (or worse, /).
+        fake_home = tmp_path / "home" / "alice"
+        fake_home.mkdir(parents=True)
+        # Plant a `.cursor/mcp.json` above HOME -- the walk must not
+        # find it.
+        above_home = tmp_path / "home"
+        (above_home / ".cursor").mkdir()
+        (above_home / ".cursor" / "mcp.json").write_text("{}")
+        # Put cwd inside HOME.
+        inside = fake_home / "proj" / "deep"
+        inside.mkdir(parents=True)
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+        assert mcp_clients.find_cursor_project_config(start=inside) is None
+
+    def test_respects_depth_cap(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Build a path deeper than _PROJECT_WALK_MAX_DEPTH and put the
+        # target file at the very top -- the walk must give up before
+        # finding it. This guards against pathological symlink loops
+        # by proving the cap is a real bound.
+        target_dir = tmp_path / ".cursor"
+        target_dir.mkdir()
+        (target_dir / "mcp.json").write_text("{}")
+        # Build a chain depth_cap + 2 levels deep (cap is 32).
+        nested = tmp_path
+        for i in range(mcp_clients._PROJECT_WALK_MAX_DEPTH + 2):
+            nested = nested / f"d{i}"
+        nested.mkdir(parents=True)
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path.parent)
+        # Even though the target exists at tmp_path/.cursor/mcp.json,
+        # we should give up before reaching it.
+        assert mcp_clients.find_cursor_project_config(start=nested) is None
 
 
 # ---------------------------------------------------------------------------
@@ -913,6 +1266,327 @@ class TestWizardMainFlow:
 
 
 # ---------------------------------------------------------------------------
+# Collision-detection wizard flow (server name already exists in target).
+# The wizard must surface the conflict, offer overwrite / rename / quit,
+# and never partially-write on the abort paths.
+# ---------------------------------------------------------------------------
+
+
+class TestCollisionFlow:
+    """End-to-end coverage of the new pre-write collision UX.
+
+    Each test pre-seeds the Cursor JSON file so ``inspect_existing``
+    returns a hit, then drives the wizard through the menu. The
+    invariants under test:
+
+    * Overwrite proceeds and the original entry is preserved in the
+      timestamped backup -- the user's escape hatch from a regretted
+      overwrite.
+    * Rename re-prompts and the new (non-colliding) name is what
+      lands in the file.
+    * Quit aborts with a non-zero exit code AND leaves the existing
+      file byte-for-byte identical (no half-write, no spurious backup).
+    * Rename-budget exhaustion aborts cleanly when every suggested
+      name keeps colliding.
+    """
+
+    @staticmethod
+    def _seed_collision(path: Path) -> str:
+        """Plant a colliding ``splunk`` entry and return the file
+        contents so the test can later assert byte-identity on quit."""
+        contents = json.dumps(
+            {
+                "mcpServers": {
+                    "splunk": {"command": "previously-installed-server", "args": []},
+                    "filesystem": {"command": "npx"},
+                }
+            }
+        )
+        path.write_text(contents)
+        return contents
+
+    def test_overwrite_proceeds_and_backs_up_original(self, monkeypatch, tmp_path: Path) -> None:
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",  # https
+                "1",  # system CA
+                "1",  # token auth
+                "splunk",  # MCP server name -- collides with seed
+                "1",  # writer = Cursor
+                # Collision menu: pick option 1 (Overwrite). Note the
+                # default is 2 (Quit), so we must enter "1" explicitly.
+                "1",
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        original = self._seed_collision(cursor_path)
+        rc = wizard_main()
+        assert rc == 0
+        # The new entry replaces the old one.
+        cursor = json.loads(cursor_path.read_text())
+        assert cursor["mcpServers"]["splunk"]["command"] == "/opt/test-prefix/bin/spl-bridge"
+        # Sibling entry preserved.
+        assert cursor["mcpServers"]["filesystem"] == {"command": "npx"}
+        # Backup of the original is alongside the file.
+        backups = [p for p in tmp_path.iterdir() if ".bak." in p.name]
+        assert len(backups) == 1
+        assert backups[0].read_text() == original
+
+    def test_rename_proceeds_with_new_name(self, monkeypatch, tmp_path: Path) -> None:
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",
+                "1",
+                "1",
+                "splunk",  # initial collides
+                "1",  # writer = Cursor
+                "2",  # collision menu: Pick a different name
+                "splunk-corp",  # new name (no collision)
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        self._seed_collision(cursor_path)
+        rc = wizard_main()
+        assert rc == 0
+        cursor = json.loads(cursor_path.read_text())
+        # Original 'splunk' entry preserved (we wrote under the new name).
+        assert cursor["mcpServers"]["splunk"]["command"] == "previously-installed-server"
+        # New entry registered under the chosen non-colliding name.
+        assert cursor["mcpServers"]["splunk-corp"]["command"] == "/opt/test-prefix/bin/spl-bridge"
+
+    def test_quit_aborts_without_writing(self, monkeypatch, tmp_path: Path, capsys) -> None:
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",
+                "1",
+                "1",
+                "splunk",  # collides
+                "1",  # writer = Cursor
+                "3",  # collision menu: Quit
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        original = self._seed_collision(cursor_path)
+        rc = wizard_main()
+        assert rc == 1
+        # File is byte-for-byte unchanged -- no merge, no atomic-write
+        # attempt, no spurious backup.
+        assert cursor_path.read_text() == original
+        # No .bak file manufactured.
+        backups = [p for p in tmp_path.iterdir() if ".bak." in p.name]
+        assert backups == []
+        # Wizard surfaced the abort.
+        captured = capsys.readouterr()
+        assert "No MCP host changes made" in captured.err
+
+    def test_quit_via_default_enter_at_collision_menu(self, monkeypatch, tmp_path: Path) -> None:
+        # The collision menu's default is index 2 (Quit) so a stray
+        # Enter must abort -- guarding the wizard-wide "destructive
+        # prompts default to safe" convention against future drift.
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",
+                "1",
+                "1",
+                "splunk",
+                "1",  # writer = Cursor
+                "",  # collision menu: stray Enter -> default = Quit
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        original = self._seed_collision(cursor_path)
+        rc = wizard_main()
+        assert rc == 1
+        assert cursor_path.read_text() == original
+
+    def test_rename_budget_exhausted_aborts(self, monkeypatch, tmp_path: Path) -> None:
+        # Seed two colliding names so every rename round still
+        # collides and the budget runs out. The default suggestion
+        # (``splunk-bridge``) is what the wizard pre-fills, so we just
+        # press Enter to accept it each round and let the budget
+        # exhaust naturally.
+        #
+        # Loop layout (matches _resolve_server_name's structure):
+        #
+        #   attempt 0: inspect('splunk')        -> hit -> menu -> rename -> name re-prompt
+        #   attempt 1: inspect('splunk-bridge') -> hit -> menu -> rename -> name re-prompt
+        #   attempt 2: inspect('splunk-bridge') -> hit -> menu -> rename
+        #              (no name re-prompt: attempt == _COLLISION_MAX_RENAMES - 1)
+        #   loop falls through: budget exhausted, abort.
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",
+                "1",
+                "1",
+                "splunk",  # initial server name -- collides
+                "1",  # writer = Cursor
+                "2",  # menu attempt 0: Pick a different name
+                "",  # accept default 'splunk-bridge' (collides too)
+                "2",  # menu attempt 1: Pick a different name
+                "",  # accept default 'splunk-bridge' (still collides)
+                "2",  # menu attempt 2: Pick a different name (no re-prompt after)
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        original_data = {
+            "mcpServers": {
+                "splunk": {"command": "old-A"},
+                "splunk-bridge": {"command": "old-B"},
+            }
+        }
+        original = json.dumps(original_data)
+        cursor_path.write_text(original)
+        rc = wizard_main()
+        assert rc == 1
+        # File unchanged; no .bak.
+        assert cursor_path.read_text() == original
+        backups = [p for p in tmp_path.iterdir() if ".bak." in p.name]
+        assert backups == []
+
+
+# ---------------------------------------------------------------------------
+# Cursor project-scope shadow warning emitted by the wizard at the end of
+# a successful CursorWriter write. The user's repo can have a checked-in
+# ``.cursor/mcp.json`` that wins over the user-scope file we just wrote;
+# without this warning that confusion turns into a "wizard succeeded but
+# Cursor still uses the old server" support call.
+# ---------------------------------------------------------------------------
+
+
+class TestCursorProjectShadowWarning:
+    def test_warns_when_project_config_collides(self, monkeypatch, tmp_path: Path, capsys) -> None:
+        # Build a fake project tree containing a .cursor/mcp.json that
+        # registers the same name we're about to write at user scope.
+        project = tmp_path / "proj"
+        cursor_dir = project / ".cursor"
+        cursor_dir.mkdir(parents=True)
+        project_mcp = cursor_dir / "mcp.json"
+        project_mcp.write_text(
+            json.dumps({"mcpServers": {"splunk": {"command": "project-pinned"}}})
+        )
+        # Pretend the user ran ``spl-bridge setup`` from inside the
+        # project tree by pointing both cwd and home at controlled
+        # locations. ``find_cursor_project_config`` walks up from cwd
+        # bounded by $HOME, so we set $HOME to tmp_path so the walk
+        # stays within tmp.
+        fake_home = tmp_path
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+        monkeypatch.chdir(project)
+
+        cursor_path = _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",
+                "1",
+                "1",
+                "splunk",  # MCP server name (no collision in user-scope)
+                "1",  # writer = Cursor
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        rc = wizard_main()
+        assert rc == 0
+        # Write succeeded.
+        cursor = json.loads(cursor_path.read_text())
+        assert "splunk" in cursor["mcpServers"]
+        # Wizard surfaced the shadowing warning. Anchor the assertion
+        # on the project file path AND the shadow-specific copy so a
+        # future log-line refactor that drops one but not the other
+        # still trips the test.
+        captured = capsys.readouterr()
+        assert str(project_mcp) in captured.err
+        assert "shadow" in captured.err.lower()
+
+    def test_no_warning_when_project_config_absent(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # cwd is in tmp_path with no .cursor anywhere -- no warning.
+        empty_proj = tmp_path / "empty"
+        empty_proj.mkdir()
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.chdir(empty_proj)
+        _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",
+                "1",
+                "1",
+                "splunk",
+                "1",
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        rc = wizard_main()
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "shadow" not in captured.err.lower()
+
+    def test_no_warning_when_names_differ(self, monkeypatch, tmp_path: Path, capsys) -> None:
+        # Project config exists but registers a different server name.
+        # Shadowing is name-keyed so this must NOT warn.
+        project = tmp_path / "proj"
+        cursor_dir = project / ".cursor"
+        cursor_dir.mkdir(parents=True)
+        (cursor_dir / "mcp.json").write_text(
+            json.dumps({"mcpServers": {"different-name": {"command": "x"}}})
+        )
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.chdir(project)
+        _drive_wizard(
+            monkeypatch,
+            tmp_path,
+            answers=[
+                "splunk.example.com",
+                "8089",
+                "1",
+                "1",
+                "1",
+                "splunk",
+                "1",
+            ],
+            secrets=["tok"],
+            keyring_works=False,
+        )
+        rc = wizard_main()
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "shadow" not in captured.err.lower()
+
+
+# ---------------------------------------------------------------------------
 # _collect_splunk_config -- previous-attempt pre-fill behaviour
 # ---------------------------------------------------------------------------
 
@@ -1132,9 +1806,17 @@ class TestBuildLaunchPropagatesAbsolutePath:
         data = json.loads(path.read_text())
         assert data["mcpServers"]["splunk"]["command"] == self._ABSOLUTE_PATH
 
-    def test_claude_cli_writer_receives_absolute_command(self) -> None:
+    def test_claude_cli_writer_receives_absolute_command(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from spl_bridge.setup_wizard import _build_launch
 
+        # Same redirect rationale as TestClaudeCLIWriter -- keep the
+        # CLI state-file backup off the real ``~/.claude.json``.
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard.mcp_clients._claude_cli_state_path",
+            lambda: tmp_path / "claude.json",
+        )
         launch = _build_launch(self._make_config())
         with (
             patch(

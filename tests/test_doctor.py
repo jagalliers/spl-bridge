@@ -184,12 +184,22 @@ def _redirect_doctor_paths(
     monkeypatch: pytest.MonkeyPatch,
     cursor_path: Path,
     claude_path: Path,
+    project_path: Path | None = None,
 ) -> None:
-    """Point the doctor's two host-config resolvers at tmp_path-rooted
+    """Point the doctor's host-config resolvers at tmp_path-rooted
     files so the scan never touches the real user's machine.
+
+    ``project_path`` defaults to ``None`` -- in which case the
+    project-scope walk in ``run_host_scan`` is forced to return
+    ``None`` so existing tests (written before the scan grew
+    project-scope awareness) keep their original behaviour. When a
+    ``project_path`` is provided, the walk helper is stubbed to return
+    that exact path so the test can drive the project-scope branch
+    deterministically without depending on the test runner's cwd.
     """
     monkeypatch.setattr(doctor, "cursor_config_path", lambda: cursor_path)
     monkeypatch.setattr(doctor, "claude_desktop_config_path", lambda: claude_path)
+    monkeypatch.setattr(doctor, "find_cursor_project_config", lambda: project_path)
 
 
 class TestRunHostScan:
@@ -488,6 +498,197 @@ class TestRunHostScan:
         doctor.run_host_scan()
         captured = capsys.readouterr()
         assert captured.out == "", f"host scan leaked to stdout: {captured.out!r}"
+
+
+class TestRunHostScanProjectShadow:
+    """Coverage for the project-scope ``.cursor/mcp.json`` arm of
+    ``--hosts``. The doctor must:
+
+    * Recognize a discovered project-scope config and run the same
+      basenames-must-be-absolute audit on it that user-scope already
+      gets, so a bare ``spl-bridge`` in a checked-in project config
+      is reported.
+    * Detect name shadowing -- any server name that appears in BOTH
+      the user-scope file (which the wizard writes to) and the project
+      file (which Cursor lets win on collision). This is the new
+      diagnostic that converts "I ran setup but Cursor still uses the
+      old server" support tickets into a one-line self-diagnosis.
+    * Stay silent when there's no project file or when there's no
+      collision -- false-positive warnings would just train operators
+      to ignore the new line.
+    """
+
+    def test_no_project_config_keeps_old_behaviour(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Default project_path=None means find_cursor_project_config
+        # returns None -- the doctor should not emit any new
+        # project-scope log lines.
+        cursor_path = tmp_path / "mcp.json"
+        cursor_path.write_text(
+            json.dumps({"mcpServers": {"splunk": {"command": "/opt/homebrew/bin/spl-bridge"}}})
+        )
+        claude_path = tmp_path / "claude.json"
+        _redirect_doctor_paths(monkeypatch, cursor_path, claude_path)
+        wizard_logger = _attach_doctor_logger(caplog)
+        try:
+            with caplog.at_level(logging.INFO, logger="spl_bridge.doctor"):
+                doctor.run_host_scan()
+        finally:
+            wizard_logger.removeHandler(caplog.handler)
+        messages = [r.getMessage() for r in caplog.records]
+        # No project-scope log line at all.
+        assert not any("Cursor (project)" in m for m in messages), messages
+        assert not any("shadow" in m.lower() for m in messages), messages
+
+    def test_project_config_with_collision_warns_shadow(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        cursor_path = tmp_path / "user_mcp.json"
+        cursor_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "splunk": {"command": "/opt/homebrew/bin/spl-bridge"},
+                        "filesystem": {"command": "npx"},
+                    }
+                }
+            )
+        )
+        claude_path = tmp_path / "claude.json"
+        project_path = tmp_path / "proj_mcp.json"
+        project_path.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        # Same name as user scope -> shadowing warning.
+                        "splunk": {"command": "/opt/homebrew/bin/spl-bridge"},
+                        # Different name -> no shadow warning for this one.
+                        "another": {"command": "/usr/local/bin/another"},
+                    }
+                }
+            )
+        )
+        _redirect_doctor_paths(monkeypatch, cursor_path, claude_path, project_path)
+        wizard_logger = _attach_doctor_logger(caplog)
+        try:
+            with (
+                caplog.at_level(logging.INFO, logger="spl_bridge.doctor"),
+                pytest.raises(SystemExit) as excinfo,
+            ):
+                doctor.run_host_scan()
+        finally:
+            wizard_logger.removeHandler(caplog.handler)
+        # Exit 1 because there's at least one shadow warning.
+        assert excinfo.value.code == 1
+        warning_msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        # Exactly the 'splunk' overlap is reported, not 'another' or
+        # 'filesystem'. Anchor on both endpoint names so a future
+        # log-line refactor can't drop the diagnostic value silently.
+        shadow_msgs = [m for m in warning_msgs if "shadow" in m.lower()]
+        assert len(shadow_msgs) == 1, shadow_msgs
+        assert "'splunk'" in shadow_msgs[0]
+        assert str(project_path) in shadow_msgs[0]
+        assert str(cursor_path) in shadow_msgs[0]
+
+    def test_project_config_no_collision_no_shadow_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Project-scope file exists but uses entirely different names.
+        # Doctor should still scan it for bare-command issues, but emit
+        # no shadow warnings.
+        cursor_path = tmp_path / "user_mcp.json"
+        cursor_path.write_text(
+            json.dumps({"mcpServers": {"splunk": {"command": "/opt/homebrew/bin/spl-bridge"}}})
+        )
+        claude_path = tmp_path / "claude.json"
+        project_path = tmp_path / "proj_mcp.json"
+        project_path.write_text(
+            json.dumps({"mcpServers": {"team-tool": {"command": "/usr/local/bin/team"}}})
+        )
+        _redirect_doctor_paths(monkeypatch, cursor_path, claude_path, project_path)
+        wizard_logger = _attach_doctor_logger(caplog)
+        try:
+            with caplog.at_level(logging.INFO, logger="spl_bridge.doctor"):
+                doctor.run_host_scan()
+        finally:
+            wizard_logger.removeHandler(caplog.handler)
+        warning_msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not any("shadow" in m.lower() for m in warning_msgs), warning_msgs
+        # The project file IS scanned by name -- assert the scan log
+        # line appeared so a future regression that silently drops the
+        # project arm gets caught.
+        info_msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+        assert any("Cursor (project)" in m for m in info_msgs), info_msgs
+
+    def test_project_config_bare_command_warning_fires(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Same bare-command audit that runs against user-scope must
+        # also run against the discovered project-scope file.
+        cursor_path = tmp_path / "user_mcp.json"
+        claude_path = tmp_path / "claude.json"
+        project_path = tmp_path / "proj_mcp.json"
+        project_path.write_text(json.dumps({"mcpServers": {"splunk": {"command": "spl-bridge"}}}))
+        _redirect_doctor_paths(monkeypatch, cursor_path, claude_path, project_path)
+        wizard_logger = _attach_doctor_logger(caplog)
+        try:
+            with (
+                caplog.at_level(logging.INFO, logger="spl_bridge.doctor"),
+                pytest.raises(SystemExit) as excinfo,
+            ):
+                doctor.run_host_scan()
+        finally:
+            wizard_logger.removeHandler(caplog.handler)
+        assert excinfo.value.code == 1
+        warning_msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        bare_warnings = [m for m in warning_msgs if "bare command 'spl-bridge'" in m]
+        assert any("Cursor (project):" in m for m in bare_warnings), warning_msgs
+
+    def test_unreadable_project_config_skipped_silently(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # An unreadable / malformed project file shouldn't manufacture
+        # a shadow warning out of thin air. The bare-command scan emits
+        # its own diagnostic; the shadow check just returns 0.
+        cursor_path = tmp_path / "user_mcp.json"
+        cursor_path.write_text(
+            json.dumps({"mcpServers": {"splunk": {"command": "/abs/spl-bridge"}}})
+        )
+        claude_path = tmp_path / "claude.json"
+        project_path = tmp_path / "proj_mcp.json"
+        project_path.write_text("{not json")
+        _redirect_doctor_paths(monkeypatch, cursor_path, claude_path, project_path)
+        wizard_logger = _attach_doctor_logger(caplog)
+        try:
+            with (
+                caplog.at_level(logging.INFO, logger="spl_bridge.doctor"),
+                pytest.raises(SystemExit) as excinfo,
+            ):
+                doctor.run_host_scan()
+        finally:
+            wizard_logger.removeHandler(caplog.handler)
+        assert excinfo.value.code == 1
+        # Malformed-JSON warning fires, but no shadow warning is
+        # invented from the unreadable side.
+        warning_msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+        assert any("not valid JSON" in m for m in warning_msgs), warning_msgs
+        assert not any("shadow" in m.lower() for m in warning_msgs), warning_msgs
 
 
 class TestCliHostsFlag:
