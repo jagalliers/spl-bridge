@@ -1,5 +1,9 @@
 # spl-bridge
 
+[![CI](https://img.shields.io/github/actions/workflow/status/jagalliers/spl-bridge/ci.yml?branch=main&label=CI&logo=github)](https://github.com/jagalliers/spl-bridge/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue)](LICENSE)
+[![Python](https://img.shields.io/badge/python-%3E%3D3.10-green)](pyproject.toml)
+
 > An independent, open-source bridge that exposes a Splunk Enterprise or Splunk Cloud REST endpoint as a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) stdio server, with built-in SPL safety guardrails.
 
 `spl-bridge` is **not** affiliated with, endorsed by, sponsored by, or certified by Splunk LLC or Cisco Systems, Inc. See [Trademarks and independence](#trademarks-and-independence) below.
