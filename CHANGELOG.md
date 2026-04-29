@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`spl-bridge doctor --hosts` audits MCP host configs for stale
+  bare-command `spl-bridge` entries.** Inspects the user-scope Cursor
+  config (`~/.cursor/mcp.json`) and the per-OS Claude Desktop config
+  for any `mcpServers.*` entry whose `command` basename is `spl-bridge`
+  / `spl-bridge.exe` and whose value is *not* an absolute path. Such
+  entries fail to launch from PATH-stripped GUI hosts (notably Claude
+  Desktop on macOS — see the absolute-path fix in this release).
+  Setup wizards on or after that fix always write the resolved
+  absolute path; the audit exists so users with pre-fix configs can
+  self-diagnose without trawling host logs. Splunk REST is *not*
+  touched in `--hosts` mode, so the audit works even when the
+  endpoint is unreachable. Exits 0 if all configs are clean, 1 if any
+  warnings emit. Third-party MCP entries (npx, python, etc.) are
+  silently skipped — `spl-bridge` does not opine on neighbour
+  hygiene. The Claude CLI (`~/.claude.json`) is intentionally not
+  scanned in this release: its persistent registration schema is the
+  CLI's private API and would require shelling out to `claude mcp
+  list --json`.
+- **Public `cursor_config_path()` and `claude_desktop_config_path()`
+  helpers in `spl_bridge.setup_wizard.mcp_clients`.** The
+  Claude Desktop helper was previously underscore-prefixed and only
+  used by `ClaudeDesktopWriter`; both are now public so the new
+  doctor scan can reuse the same canonical locations rather than
+  duplicating per-platform logic. The Cursor helper is also factored
+  out for symmetry. Backwards compatibility: no callers existed
+  outside the setup_wizard package, and the underscore-prefixed
+  Claude Desktop helper has no remaining references in-tree.
+
 ### Changed
 
 - **Setup wizard now offers edit-and-retry on probe failure.** When

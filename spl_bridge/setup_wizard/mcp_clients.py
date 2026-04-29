@@ -183,6 +183,46 @@ class ClientWriter(ABC):
 
 
 # ---------------------------------------------------------------------------
+# Per-host config-path resolvers (public for `spl-bridge doctor --hosts`)
+# ---------------------------------------------------------------------------
+
+
+def cursor_config_path() -> Path:
+    """User-scope Cursor MCP config path.
+
+    Public so ``spl_bridge.doctor`` can resolve the same location the
+    ``CursorWriter`` writes to. Per-project ``.cursor/mcp.json`` files
+    are intentionally not enumerated here -- the scanner only inspects
+    the user-scope config so it doesn't have to walk arbitrary project
+    trees on the user's machine.
+    """
+    return Path.home() / ".cursor" / "mcp.json"
+
+
+def claude_desktop_config_path() -> Path:
+    """Per-OS path Claude Desktop reads.
+
+    Reference: https://modelcontextprotocol.io/quickstart/user
+
+    Public so other modules (notably ``spl_bridge.doctor`` for the
+    ``--hosts`` scan) can resolve the same canonical location without
+    duplicating the per-platform logic.
+    """
+    home = Path.home()
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            return Path(appdata) / "Claude" / "claude_desktop_config.json"
+        return home / "AppData" / "Roaming" / "Claude" / "claude_desktop_config.json"
+    # Linux + others
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    base = Path(xdg) if xdg else home / ".config"
+    return base / "Claude" / "claude_desktop_config.json"
+
+
+# ---------------------------------------------------------------------------
 # Cursor
 # ---------------------------------------------------------------------------
 
@@ -191,7 +231,7 @@ class CursorWriter(ClientWriter):
     name = "Cursor"
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or (Path.home() / ".cursor" / "mcp.json")
+        self._path = path or cursor_config_path()
 
     def is_available(self) -> bool:
         # Cursor doesn't need to be installed -- the JSON config is
@@ -218,30 +258,11 @@ class CursorWriter(ClientWriter):
 # ---------------------------------------------------------------------------
 
 
-def _claude_desktop_config_path() -> Path:
-    """Per-OS path Claude Desktop reads.
-
-    Reference: https://modelcontextprotocol.io/quickstart/user
-    """
-    home = Path.home()
-    if sys.platform == "darwin":
-        return home / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json"
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        if appdata:
-            return Path(appdata) / "Claude" / "claude_desktop_config.json"
-        return home / "AppData" / "Roaming" / "Claude" / "claude_desktop_config.json"
-    # Linux + others
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    base = Path(xdg) if xdg else home / ".config"
-    return base / "Claude" / "claude_desktop_config.json"
-
-
 class ClaudeDesktopWriter(ClientWriter):
     name = "Claude Desktop"
 
     def __init__(self, path: Path | None = None) -> None:
-        self._path = path or _claude_desktop_config_path()
+        self._path = path or claude_desktop_config_path()
 
     def is_available(self) -> bool:
         # Best-effort: directory existing implies Claude Desktop is

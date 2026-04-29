@@ -1025,3 +1025,84 @@ class TestResolveSplBridgeCommand:
             # On POSIX hosts, the backslash path is not absolute, so we
             # land in the bare-name fallback. The helper does not crash.
             assert _resolve_spl_bridge_command() == "spl-bridge"
+
+
+class TestBuildLaunchPropagatesAbsolutePath:
+    """The wizard resolves an absolute path inside ``_build_launch()`` and
+    hands the resulting :class:`SplunkMcpLaunch` to whichever writer the
+    user picked. Only :class:`CursorWriter` has end-to-end coverage in
+    ``TestWizardMainFlow`` -- these tests assert the absolute path also
+    lands in the per-target output for the other three writers, so a
+    future refactor that splits launch construction per target (e.g. to
+    let Claude CLI register a bare command for prettier ``claude mcp
+    list`` output) would be caught.
+    """
+
+    _ABSOLUTE_PATH = "/opt/test-prefix/bin/spl-bridge"
+
+    @pytest.fixture(autouse=True)
+    def _stub_resolver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            "spl_bridge.setup_wizard._resolve_spl_bridge_command",
+            lambda: self._ABSOLUTE_PATH,
+        )
+
+    def _make_config(self) -> cfg_mod.SplunkMCPConfig:
+        # Token mode keeps the env payload minimal. The token never
+        # leaves the credstore so it doesn't appear in any writer
+        # output -- but the connection metadata does, and that's what
+        # we want to verify rides alongside the absolute command.
+        return cfg_mod.SplunkMCPConfig(
+            host="splunk.example.com",
+            port=8089,
+            scheme="https",
+            ssl_verify=True,
+            splunk_token="test-token-not-persisted-by-build_launch",
+        )
+
+    def test_cursor_writer_receives_absolute_command(self, tmp_path: Path) -> None:
+        from spl_bridge.setup_wizard import _build_launch
+
+        path = tmp_path / "mcp.json"
+        launch = _build_launch(self._make_config())
+        mcp_clients.CursorWriter(path=path).write("splunk", launch)
+        data = json.loads(path.read_text())
+        assert data["mcpServers"]["splunk"]["command"] == self._ABSOLUTE_PATH
+
+    def test_claude_desktop_writer_receives_absolute_command(self, tmp_path: Path) -> None:
+        from spl_bridge.setup_wizard import _build_launch
+
+        path = tmp_path / "claude_desktop_config.json"
+        launch = _build_launch(self._make_config())
+        mcp_clients.ClaudeDesktopWriter(path=path).write("splunk", launch)
+        data = json.loads(path.read_text())
+        assert data["mcpServers"]["splunk"]["command"] == self._ABSOLUTE_PATH
+
+    def test_claude_cli_writer_receives_absolute_command(self) -> None:
+        from spl_bridge.setup_wizard import _build_launch
+
+        launch = _build_launch(self._make_config())
+        with (
+            patch(
+                "spl_bridge.setup_wizard.mcp_clients.shutil.which",
+                return_value="/usr/local/bin/claude",
+            ),
+            patch("spl_bridge.setup_wizard.mcp_clients.subprocess.run") as run,
+        ):
+            run.return_value = MagicMock(returncode=0, stderr="")
+            mcp_clients.ClaudeCLIWriter().write("splunk", launch)
+        argv = run.call_args[0][0]
+        # argv layout (see ClaudeCLIWriter.write):
+        #   [0..4] = ["claude","mcp","add","--scope","user"]
+        #   [5]    = "--"  (end-of-options marker, M-5)
+        #   [6]    = server_name ("splunk")
+        #   [7]    = launch.command  <-- THIS is what we assert
+        #   [8...] = launch.args + ["--env","K=V",...]
+        assert argv[7] == self._ABSOLUTE_PATH
+
+    def test_snippet_printer_receives_absolute_command(self) -> None:
+        from spl_bridge.setup_wizard import _build_launch
+
+        launch = _build_launch(self._make_config())
+        result = mcp_clients.SnippetPrinter().write("splunk", launch)
+        assert result.snippet["mcpServers"]["splunk"]["command"] == self._ABSOLUTE_PATH

@@ -156,9 +156,24 @@ pip install 'spl-bridge @ git+https://github.com/jagalliers/spl-bridge.git'
 export SPLUNK_HOST=splunk.example.com
 export SPLUNK_TOKEN=your-splunk-token
 
-spl-bridge doctor   # one-shot connectivity check
-spl-bridge serve    # run the MCP stdio server (or `python -m spl_bridge`)
+spl-bridge doctor          # one-shot Splunk connectivity check
+spl-bridge doctor --hosts  # audit MCP host configs (Cursor, Claude Desktop)
+                           # for stale bare-command spl-bridge entries
+spl-bridge serve           # run the MCP stdio server (or `python -m spl_bridge`)
 ```
+
+> **`doctor --hosts`** — inspects `~/.cursor/mcp.json` and the per-OS
+> Claude Desktop config for any `spl-bridge` entry whose `command` is
+> a bare basename (e.g. `"command": "spl-bridge"`) rather than an
+> absolute path. Bare-command entries fail to launch from
+> PATH-stripped GUI hosts (notably Claude Desktop on macOS, where
+> launchd hands the host a minimal PATH that omits pipx / `uv tool` /
+> Homebrew Python user-sites and project venvs). Setup wizards
+> ≥this release always write the resolved absolute path; the
+> `--hosts` audit is for users with pre-fix configs who want to
+> self-diagnose without trawling host logs. The Splunk REST endpoint
+> is **not** touched in `--hosts` mode, so it works even when Splunk
+> is unreachable.
 
 > **WARNING — Lab-only password mode.** Combining `SPLUNK_USERNAME`/`SPLUNK_PASSWORD`
 > with `SPLUNK_VERIFY_SSL=false` is **only safe inside a fully isolated lab network**.
