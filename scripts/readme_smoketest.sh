@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
 # Walk the README's CLI surface against a clean editable install:
 # the same console-script entry point and `python -m` shim that end
-# users get from `pipx install`, exercised here against the in-tree
-# source so a regression in the package shape (missing entry point,
-# broken extras, doctor crash, setup TTY guard) blocks the push
-# before it ships.
+# users get from `uv tool install`, exercised here against the
+# in-tree source so a regression in the package shape (missing entry
+# point, broken extras, doctor crash, setup TTY guard) blocks the
+# push before it ships.
 #
-# Why editable install instead of literal `pipx install` from the
-# README's Quick Start: pipx is a thin wrapper around `pip install`
-# into a private venv -- same packaging machinery, same
-# console_script resolution, same extras handling. `pip install -e .`
+# Why editable install instead of literal `uv tool install` from the
+# README's Quick Start: uv tool install (and the pipx alternative
+# the README also documents) are wrappers around standard packaging
+# into a private venv -- same console_script resolution, same extras
+# handling, same `python -m spl_bridge` shim. `pip install -e .`
 # from this checkout exercises the same surface, faster, with no
-# dependency on having pipx itself installed on the runner. If a
-# pipx-specific regression shows up in the wild we can layer a
-# second pipx-based smoke on top later.
+# dependency on having uv or pipx itself installed on the runner.
+# If a uv-specific or pipx-specific regression shows up in the wild
+# we can layer a tool-specific smoke on top later.
 #
 # What we assert:
 #   1. `pip install -e .` installs cleanly.
@@ -37,7 +38,7 @@
 # Why this lives separate from pytest:
 #   It's a *user-facing* smoketest. We want to run it from a fresh
 #   shell with nothing imported, mirroring what a new user's
-#   environment looks like after `pipx install` (or any other
+#   environment looks like after `uv tool install` (or any other
 #   isolated install). Pytest with its plugins, conftest fixtures,
 #   and patched env wouldn't catch e.g. a missing console_script
 #   entry in pyproject.toml or a broken `python -m` shim.

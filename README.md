@@ -22,36 +22,30 @@ The CLI exposes three subcommands: `setup` (interactive wizard), `doctor` (one-s
 
 ## Quick start (macOS)
 
-Mac is the predominant developer target. Three commands take you from zero to a running setup wizard.
+Mac is the predominant developer target. Three commands take you from zero to a running setup wizard. Paste the whole block at once, or step through line by line — both work, and the wizard takes over interactively at the end.
 
 ```bash
-# 1. Install pipx (Homebrew pulls in Python 3.x as a dependency, so
-#    you don't have to manage a Python interpreter separately).
-brew install pipx
-
-# 2. Install spl-bridge with macOS Keychain support, isolated in its
-#    own pipx-managed venv. Lands at ~/.local/bin/spl-bridge --
-#    on the PATH that Cursor and Claude Desktop see when they spawn
-#    MCP servers, so no further wiring is needed.
-pipx install 'spl-bridge[keyring] @ git+https://github.com/jagalliers/spl-bridge.git'
-
-# 3. Run the interactive wizard. It walks you through Splunk creds,
-#    secret storage (macOS Keychain by default), and MCP-host wiring
-#    (Cursor, Claude Desktop, or Claude CLI). Nothing is written to
-#    disk until the wizard's step 4.
+brew install uv
+uv tool install 'spl-bridge[keyring] @ git+https://github.com/jagalliers/spl-bridge.git'
 spl-bridge setup
 ```
 
+What each command does:
+
+- **`brew install uv`** — installs the [uv Python package manager](https://docs.astral.sh/uv/) from Homebrew. Pulls in any Python it needs as a transitive dependency; uv can also fetch its own managed Python on demand. Lands at `/opt/homebrew/bin/uv`, on the PATH that Cursor and Claude Desktop see at MCP-server spawn time (matters if you ever hand-roll a `uvx`-based MCP config).
+- **`uv tool install 'spl-bridge[keyring] @ git+...'`** — installs `spl-bridge` with macOS Keychain support, isolated in its own uv-managed venv. Lands at `~/.local/bin/spl-bridge`. The same install pattern recommended by every official Python MCP server README (mcp-server-git, mcp-server-fetch, etc.).
+- **`spl-bridge setup`** — runs the interactive wizard. It walks you through Splunk creds, secret storage (macOS Keychain by default), and MCP-host wiring (Cursor, Claude Desktop, or Claude CLI). Nothing is written to disk until the wizard's step 4.
+
 After the wizard finishes, restart your MCP host (Cursor / Claude Desktop) so it picks up the new server.
 
-- Don't have Homebrew? Install it from [brew.sh](https://brew.sh).
-- Prefer [`uv`](https://docs.astral.sh/uv/)? `uv tool install 'spl-bridge[keyring] @ git+https://github.com/jagalliers/spl-bridge.git'` is the equivalent one-liner.
-- Already in an Anaconda env or a project venv? Plain `pip install 'spl-bridge[keyring] @ git+...'` works there too — see [Install](#install) for the long form, the why-this-URL explanation, and the dev install.
-- `spl-bridge: command not found` after the install? Run `pipx ensurepath`, then open a new terminal. (pipx prints this advice itself when needed, but the message can scroll past during the install.)
+- Don't have Homebrew? Either install it from [brew.sh](https://brew.sh) (recommended), or use the Astral installer: `curl -LsSf https://astral.sh/uv/install.sh | sh`, then reopen your terminal.
+- Prefer [`pipx`](https://pipx.pypa.io/)? `pipx install 'spl-bridge[keyring] @ git+https://github.com/jagalliers/spl-bridge.git'` works the same way and is the [PyPA-canonical alternative](https://packaging.python.org/en/latest/guides/tool-recommendations/) for installing Python CLI tools.
+- Already in an Anaconda env or a project venv? Plain `pip install 'spl-bridge[keyring] @ git+...'` (or `uv pip install ...`) works there too — see [Install](#install) for the long form, the why-this-URL explanation, and the dev install.
+- `spl-bridge: command not found` after the install? Run `uv tool update-shell`, then open a new terminal. (uv typically prints this advice itself when needed, but the message can scroll past during the install.)
 
 ## Install
 
-> Requires Python 3.10 or newer. Confirm with `python3 --version`. The macOS-bundled `/usr/bin/python3` is older than this; the [Quick start (macOS)](#quick-start-macos) above uses `pipx`, which pulls in a fresh Python via Homebrew as a transitive dependency. Other options for getting a modern Python: `pyenv`, `uv`, or `brew install python` directly.
+> Requires Python 3.10 or newer. Confirm with `python3 --version`. The macOS-bundled `/usr/bin/python3` is older than this; the [Quick start (macOS)](#quick-start-macos) above uses `uv`, which can fetch a managed Python interpreter on demand (and otherwise re-uses Homebrew Python if present). Other options for getting a modern Python without uv: `pyenv`, `pipx` (via Homebrew Python), or `brew install python` directly.
 
 For the fastest path on macOS, see [Quick start (macOS)](#quick-start-macos) above. The rest of this section covers the why and the long-form options.
 

@@ -403,7 +403,11 @@ class TestAskChoiceDefaultMarker:
     ]
 
     def _choice_lines(self, captured_err: str) -> list[str]:
-        return [line for line in captured_err.splitlines() if line.lstrip().startswith(("1)", "2)", "3)"))]
+        return [
+            line
+            for line in captured_err.splitlines()
+            if line.lstrip().startswith(("1)", "2)", "3)"))
+        ]
 
     def test_each_line_has_at_most_one_default_marker(self, capsys, monkeypatch) -> None:
         monkeypatch.setattr("builtins.input", lambda _prompt="": "")
@@ -411,9 +415,7 @@ class TestAskChoiceDefaultMarker:
             ui.ask_choice("TLS verification", self.TLS_CHOICES, default=default_idx)
             captured = capsys.readouterr()
             for line in self._choice_lines(captured.err):
-                assert line.count("(default)") <= 1, (
-                    f"Duplicate (default) marker on line: {line!r}"
-                )
+                assert line.count("(default)") <= 1, f"Duplicate (default) marker on line: {line!r}"
 
     def test_marker_on_first_option_when_default_is_zero(self, capsys, monkeypatch) -> None:
         monkeypatch.setattr("builtins.input", lambda _prompt="": "")
