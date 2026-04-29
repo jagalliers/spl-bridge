@@ -9,8 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- README "Quick start" now states the Python 3.10+ requirement up front,
-  including a note about macOS's bundled `python3` being too old.
+- **README restructured around the setup wizard.** The Quick Start now
+  presents two parallel paths under one "Setup" heading: (A) the
+  recommended `spl-bridge setup` wizard with a sample transcript and an
+  explicit "what gets stored where" callout, and (B) full manual
+  configuration (env vars, hand-rolled `mcp.json` for Cursor / Claude
+  Desktop / Claude CLI, plus the Docker / Kubernetes `_FILE` pattern).
+  No facts removed; everything reorganised so the wizard leads.
+- **New "Where credentials live" section** in the README documents the
+  four-source resolution order (env -> `_FILE` -> OS keychain -> 0600
+  dotfile), the per-OS keychain identifiers and dotfile paths, the
+  at-rest protection model for each source (encrypted on macOS / Windows
+  Keychain; mode-0600 only and **not** encrypted in the dotfile), and
+  the dotfile's refusal-to-read rules (`O_NOFOLLOW`, mode != 0600,
+  size > 64 KiB). Documents how to inspect or delete stored
+  credentials with native OS tooling.
+- **CLI help screens upgraded.** `spl-bridge --help` now carries a top
+  description plus an epilog that names the three subcommands and links
+  to the README. `spl-bridge setup --help`, `... doctor --help`, and
+  `... serve --help` each gain a description and a per-subcommand
+  epilog explaining what runs, what gets persisted (and what does not),
+  and where state ends up. Behaviour unchanged.
 - `scripts/smoketest_wizard.py` now prints only the `splunk-wizard-smoketest`
   entry it just created, not the entire `~/.cursor/mcp.json`. Avoids echoing
   pre-existing entries (which may carry bearer tokens in their `args`/`env`)
@@ -22,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Upstream body bytes still never reach clients; full detail remains in
   stderr under the same `request_id`. Other tools and other 4xx/5xx paths
   retain today's always-redact behaviour.
+
+### Documentation
+
+- `CONTRIBUTING.md` adds a "Commit trailers (and a note for AI coding
+  assistants)" subsection clarifying that `Signed-off-by:` is the only
+  required trailer and that `Co-authored-by:` should be reserved for
+  genuine human co-authors. Includes explicit guidance for AI agents
+  about not appending themselves as co-authors.
 
 ## [0.1.0] - YYYY-MM-DD
 
