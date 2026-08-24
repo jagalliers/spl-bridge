@@ -121,16 +121,21 @@ class TestTokenModeNoRetry:
         assert out.status_code == 401
         assert mock_req.call_count == 1
 
-    def test_token_invalid_logged_once_per_process(self, caplog) -> None:
+    def test_token_invalid_logged_once_per_process(self) -> None:
         import logging
 
-        # The `spl_bridge` logger is non-propagating (see
-        # `spl_bridge/__init__.py`), so caplog's default root handler
-        # never sees its records. Attach caplog's handler directly to
-        # the target logger for this assertion.
+        # Deliberately not caplog: the `spl_bridge` logger is
+        # non-propagating (see `spl_bridge/__init__.py`), and how caplog
+        # treats such loggers changed across pytest versions (>=8.4
+        # attaches its handler to them automatically, which turned the
+        # old manual addHandler(caplog.handler) here into a double
+        # capture). A private handler on the emitting logger fires
+        # exactly once per emit on every pytest version.
+        records: list[logging.LogRecord] = []
+        handler = logging.Handler()
+        handler.emit = records.append  # type: ignore[method-assign]
         target = logging.getLogger("spl_bridge.splunk_client")
-        target.addHandler(caplog.handler)
-        caplog.set_level(logging.ERROR, logger="spl_bridge.splunk_client")
+        target.addHandler(handler)
         try:
             cfg = SplunkMCPConfig(host="h", splunk_token="t-abc")
             client = SplunkClient(cfg)
@@ -140,7 +145,7 @@ class TestTokenModeNoRetry:
                 client.call_api("GET", "services/server/info")
                 client.call_api("GET", "services/server/info")
 
-            rejected = [r for r in caplog.records if "Splunk rejected token" in r.getMessage()]
+            rejected = [r for r in records if "Splunk rejected token" in r.getMessage()]
             assert len(rejected) == 1
         finally:
-            target.removeHandler(caplog.handler)
+            target.removeHandler(handler)
