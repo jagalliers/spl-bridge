@@ -94,6 +94,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`mcp` dependency bounded to `>=1.2.0,<2` — fresh installs were
+  broken.** The mcp Python SDK 2.x removed `mcp.server.fastmcp`, so an
+  unbounded `mcp>=1.2.0` resolved 2.1.0 on any fresh non-Docker
+  install (README `pip`/`uv tool install`, CI's `pip install -e
+  ".[dev]"`) and `spl_bridge.server` failed at import. Docker builds
+  were immune via the hash-pinned lockfile (`mcp==1.27.0`, which
+  already satisfies the new bound — no lockfile change). The setup
+  wizard's prereq check now imports `mcp.server.fastmcp` rather than
+  bare `mcp`, so an already-installed 2.x environment is diagnosed by
+  `spl-bridge setup` instead of failing later at server start.
+  Migration to the 2.x SDK is deliberately deferred; the in-tree
+  surface is small (`FastMCP`, `mcp.types.CallToolResult`/
+  `TextContent`, `mcp.client.session`/`stdio` in tests, plus one
+  private `_mcp_server.version` reach-through in `server.py`).
+- **Test suite runs green on modern pytest and on machines with a
+  live spl-bridge setup.**
+  `test_auth_retry.py::test_token_invalid_logged_once_per_process` now
+  counts log records via a private capturing handler instead of
+  `caplog`: pytest ≥8.4 attaches caplog's handler to non-propagating
+  loggers (like the `spl_bridge` package logger) automatically, so the
+  test's manual `addHandler(caplog.handler)` on the child logger
+  double-captured every record and failed with `assert 2 == 1` — the
+  failure blocking CI on all open dependabot PRs. Separately, a new
+  `tests/conftest.py` autouse fixture redirects
+  `platformdirs.user_config_dir` to a per-test temp dir and stubs the
+  `keyring` module, so `config.from_env()`'s dotfile/keychain
+  fallbacks can never pick up a developer's real
+  `~/Library/Application Support/spl-bridge/credentials` (which made
+  `test_config.py::test_missing_auth_raises` fail, and left
+  `test_password_mode` dependent on the dotfile's contents).
+
 - **`check_spl_safe` no longer misattributes transport errors as
   safety violations.** Previously a `requests.ConnectionError`,
   `requests.Timeout`, or `SplunkLoginError` raised from the parser
