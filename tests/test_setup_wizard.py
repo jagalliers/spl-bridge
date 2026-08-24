@@ -90,28 +90,7 @@ class TestDotfileStore:
 # ---------------------------------------------------------------------------
 
 
-class _FakeKeyring:
-    def __init__(self, fail_class: bool = False):
-        self._store: dict[tuple[str, str], str] = {}
-        # Use type() so the synthesised class actually has __name__ == "Keyring"
-        # and a controllable __module__ -- mimicking real keyring backends.
-        if fail_class:
-            backend_cls = type("Keyring", (), {"__module__": "keyring.backends.fail"})
-        else:
-            backend_cls = type("Keyring", (), {"__module__": "keyring.backends.macOS"})
-        self._backend = backend_cls()
-
-    def get_keyring(self):
-        return self._backend
-
-    def set_password(self, service: str, key: str, value: str) -> None:
-        self._store[(service, key)] = value
-
-    def get_password(self, service: str, key: str) -> str | None:
-        return self._store.get((service, key))
-
-    def delete_password(self, service: str, key: str) -> None:
-        self._store.pop((service, key), None)
+from tests.conftest import FakeKeyring as _FakeKeyring  # noqa: E402
 
 
 class TestKeyringStore:
