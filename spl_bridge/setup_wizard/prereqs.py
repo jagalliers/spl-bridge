@@ -40,7 +40,9 @@ def _can_import(module: str) -> tuple[bool, str]:
 
 
 def check_mcp_importable() -> CheckResult:
-    ok, detail = _can_import("mcp")
+    # Import the exact module the server needs, not just the top-level
+    # package: mcp 2.x still imports as "mcp" but dropped mcp.server.fastmcp.
+    ok, detail = _can_import("mcp.server.fastmcp")
     return CheckResult("mcp library", ok, detail)
 
 

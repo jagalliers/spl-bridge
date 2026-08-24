@@ -302,9 +302,11 @@ SHAs current.
 #### L-8. `pyproject.toml` declares loose dependency ranges
 
 **Location:** `pyproject.toml:dependencies`.
-**Evidence:** `mcp>=1.0`, `requests>=2.32`, `platformdirs>=4.0`. There is
-no top-level lockfile; reproducible builds depend on the build host's
-resolver state.
+**Evidence:** `mcp>=1.2.0,<2`, `requests>=2.31.0`, `platformdirs>=4.0`.
+There is no top-level lockfile; reproducible builds depend on the build
+host's resolver state. (The `mcp<2` upper bound was added after mcp 2.x
+removed `mcp.server.fastmcp` and broke fresh installs — an instance of
+exactly this risk.)
 **Severity:** Low (acceptable for a library; would matter more if we
 shipped a frozen wheel + container together).
 **Remediation:** Generate and commit a `requirements.lock` (or

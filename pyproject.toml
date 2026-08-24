@@ -11,7 +11,8 @@ requires-python = ">=3.10"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"]
 dependencies = [
-    "mcp>=1.2.0",
+    # <2: mcp 2.x removed mcp.server.fastmcp, which server.py depends on.
+    "mcp>=1.2.0,<2",
     "requests>=2.31.0",
     "platformdirs>=4.0",
 ]
