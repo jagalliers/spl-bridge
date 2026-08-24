@@ -129,7 +129,9 @@ def _resolve_secret(env_key: str) -> str | None:
     1. ``$ENV_KEY`` direct env var
     2. ``$ENV_KEY_FILE`` env var pointing at a secret file
     3. OS keychain via the optional ``keyring`` extra
-    4. ``$XDG_CONFIG_HOME/spl-bridge/credentials`` (mode 0600 only)
+    4. ``platformdirs.user_config_dir("spl-bridge")/credentials`` (mode
+       0600 only) — e.g. ``~/Library/Application Support/spl-bridge/``
+       on macOS, ``$XDG_CONFIG_HOME/spl-bridge/`` on Linux
 
     Returns ``None`` if none of the four sources yields a non-empty
     value. Each source is tried in isolation so a misconfigured layer
