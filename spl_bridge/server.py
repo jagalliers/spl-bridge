@@ -11,11 +11,12 @@ import os
 import re
 import sys
 import time as _time
-from typing import Any
+from typing import Annotated, Any
 
 import requests
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
+from pydantic import Field
 
 from spl_bridge import __version__ as _SPL_BRIDGE_VERSION
 from spl_bridge.auth import SplunkLoginError
@@ -42,6 +43,63 @@ logger = logging.getLogger(__name__)
 
 MAX_PAYLOAD_BYTES = 131_072
 MAX_JSON_DEPTH = 32
+
+# Per-parameter descriptions surfaced in the advertised MCP schema
+# (``tools/list``). FastMCP derives the wire schema from the Python
+# signatures in ``_register_tool``, NOT from ``builtin_tools.json`` --
+# without these, LLM callers see bare types and route around the
+# parameters (observed failure mode: unbounded All-Time searches).
+# ``tests/test_schema_and_time_window.py`` asserts these stay in sync
+# with the catalog descriptions in ``data/builtin_tools.json``.
+# These must be module-level: ``from __future__ import annotations``
+# makes annotations strings, and FastMCP resolves them against
+# ``func.__globals__``.
+_QUERY_DESC = (
+    "SPL search to execute (e.g. 'search index=main error | head 20'). Maximum 5000 characters."
+)
+_EARLIEST_TIME_DESC = (
+    'Start of the search window as a Splunk time modifier, e.g. "-24h", '
+    '"-7d", "2025-12-31T00:00:00". Use "0" to search all time. If omitted, '
+    "a server-configured default window applies (default -24h) and is "
+    "disclosed in the response's time_window field."
+)
+_LATEST_TIME_DESC = (
+    'End of the search window as a Splunk time modifier, e.g. "now", "-1h", '
+    '"2026-01-01T00:00:00". Defaults to now if omitted.'
+)
+_ROW_LIMIT_DESC = (
+    "Maximum number of result rows to return. Server-capped at the "
+    "configured maximum (default 1000)."
+)
+_SS_NAME_DESC = "Name of the saved search to execute."
+_SS_ARGS_DESC = (
+    'Optional replacement arguments for saved-search tokens, as space-separated key="value" pairs.'
+)
+_SS_EARLIEST_DESC = (
+    "Optional earliest time override for this run, as a Splunk time modifier "
+    '(e.g. "-24h", "-7d"). Omit to use the saved search\'s stored time window. '
+    "Inline time modifiers in the saved search's own SPL take precedence "
+    "either way."
+)
+_SS_LATEST_DESC = (
+    "Optional latest time override for this run, as a Splunk time modifier "
+    '(e.g. "now", "-1h"). Omit to use the saved search\'s stored time window.'
+)
+_SS_APP_DESC = "Splunk app context to dispatch the saved search in."
+_META_TYPE_DESC = "Metadata category to enumerate (hosts, sources, or sourcetypes)."
+_META_INDEX_DESC = "Index name or wildcard pattern (e.g. main, app_*, *)."
+_META_EARLIEST_DESC = (
+    "Optional start of the metadata window as a Splunk time modifier, "
+    'e.g. "-24h", "-7d". Omit to cover all time -- recommended for '
+    "discovery: firstTime/lastTime in the results reveal where "
+    "historical data lives."
+)
+_META_LATEST_DESC = (
+    'Optional end of the metadata window as a Splunk time modifier, e.g. "now". '
+    "Omit to cover through now."
+)
+_KO_TYPE_DESC = "Knowledge-object category to enumerate."
+_INDEX_NAME_DESC = "Name of the index to describe."
 
 # M5: Saved-search ``args`` are appended verbatim to the
 # ``/saved/searches/{name}/dispatch`` POST body. We allow the characters
@@ -207,7 +265,10 @@ def _build_mcp_app(
                 logger.exception("Splunk request timed out during tool %s", tool_mcp_name)
                 raise ToolExecutionError(
                     "Splunk request timed out after "
-                    f"{config.timeout}s (request_id={current_request_id()})"
+                    f"{config.timeout}s and was stopped. Narrow the search: "
+                    "pass earliest_time (e.g. '-24h'), add index=/sourcetype= "
+                    "filters, or use get_metadata to scope the data first "
+                    f"(request_id={current_request_id()})"
                 ) from None
             except requests.ConnectionError:
                 # Includes DNS failures, refused TCP, TLS handshake
@@ -296,6 +357,21 @@ def _build_mcp_app(
         except ValueError as exc:
             raise ToolExecutionError(str(exc)) from exc
 
+        # Default time window for ad-hoc queries only (name-scoped like the
+        # classify_400_as_savedsearch opt-in below). run_saved_search and
+        # get_metadata deliberately keep omitted == unbounded: saved
+        # searches should run unmodified, and metadata discovery over wide
+        # ranges is cheap and is exactly what that tool exists for.
+        applied_default_window = False
+        if (
+            tool_def["name"] == "run_query"
+            and earliest is None
+            and latest is None
+            and config.default_earliest_time is not None
+        ):
+            earliest = config.default_earliest_time
+            applied_default_window = True
+
         if not spl.strip():
             raise ToolExecutionError("Generated SPL query is empty")
 
@@ -326,6 +402,15 @@ def _build_mcp_app(
 
         if "error" in result:
             raise ToolExecutionError(result["error"])
+
+        if applied_default_window:
+            # In-band disclosure: a window-bounded empty result must not be
+            # mistakable for "no such data exists anywhere".
+            result["time_window"] = (
+                f"{config.default_earliest_time} to now (default; pass "
+                "earliest_time/latest_time to override, "
+                'earliest_time="0" for all time)'
+            )
 
         return result
 
@@ -370,10 +455,10 @@ def _register_tool(
 
         @mcp.tool(name=name, description=description)
         def _query_tool(
-            query: str,
-            earliest_time: str | None = None,
-            latest_time: str | None = None,
-            row_limit: int | None = None,
+            query: Annotated[str, Field(description=_QUERY_DESC)],
+            earliest_time: Annotated[str | None, Field(description=_EARLIEST_TIME_DESC)] = None,
+            latest_time: Annotated[str | None, Field(description=_LATEST_TIME_DESC)] = None,
+            row_limit: Annotated[int | None, Field(description=_ROW_LIMIT_DESC)] = None,
         ) -> CallToolResult:
             args: dict[str, Any] = {"query": query}
             if earliest_time is not None:
@@ -390,11 +475,11 @@ def _register_tool(
 
         @mcp.tool(name=name, description=description)
         def _saved_search_tool(
-            saved_search_name: str,
-            args: str = "",
-            earliest_time: str | None = None,
-            latest_time: str | None = None,
-            app: str | None = None,
+            saved_search_name: Annotated[str, Field(description=_SS_NAME_DESC)],
+            args: Annotated[str, Field(description=_SS_ARGS_DESC)] = "",
+            earliest_time: Annotated[str | None, Field(description=_SS_EARLIEST_DESC)] = None,
+            latest_time: Annotated[str | None, Field(description=_SS_LATEST_DESC)] = None,
+            app: Annotated[str | None, Field(description=_SS_APP_DESC)] = None,
         ) -> CallToolResult:
             # M5: cap length first so a degenerate regex match never
             # walks a multi-MB string the user pasted by mistake.
@@ -423,11 +508,11 @@ def _register_tool(
 
         @mcp.tool(name=name, description=description)
         def _type_index_tool(
-            type: str,
-            index: str = "*",
-            earliest_time: str | None = None,
-            latest_time: str | None = None,
-            row_limit: int | None = None,
+            type: Annotated[str, Field(description=_META_TYPE_DESC)],
+            index: Annotated[str, Field(description=_META_INDEX_DESC)] = "*",
+            earliest_time: Annotated[str | None, Field(description=_META_EARLIEST_DESC)] = None,
+            latest_time: Annotated[str | None, Field(description=_META_LATEST_DESC)] = None,
+            row_limit: Annotated[int | None, Field(description=_ROW_LIMIT_DESC)] = None,
         ) -> CallToolResult:
             tool_args: dict[str, Any] = {"type": type, "index": index}
             if earliest_time is not None:
@@ -443,7 +528,9 @@ def _register_tool(
     if has_type:
 
         @mcp.tool(name=name, description=description)
-        def _type_tool(type: str) -> CallToolResult:
+        def _type_tool(
+            type: Annotated[str, Field(description=_KO_TYPE_DESC)],
+        ) -> CallToolResult:
             return _format_success(execute_fn(name, {"type": type}))
 
         return
@@ -451,7 +538,9 @@ def _register_tool(
     if has_index_name:
 
         @mcp.tool(name=name, description=description)
-        def _index_name_tool(index_name: str) -> CallToolResult:
+        def _index_name_tool(
+            index_name: Annotated[str, Field(description=_INDEX_NAME_DESC)],
+        ) -> CallToolResult:
             return _format_success(execute_fn(name, {"index_name": index_name}))
 
         return

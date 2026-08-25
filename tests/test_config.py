@@ -23,6 +23,7 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "MCP_TIMEOUT",
         "MCP_MAX_ROW_LIMIT",
         "MCP_DEFAULT_ROW_LIMIT",
+        "MCP_DEFAULT_EARLIEST_TIME",
         "SPLUNK_ALLOW_PLAINTEXT",
         "MCP_RATE_LIMITS",
     ):
@@ -77,6 +78,47 @@ class TestFromEnv:
         cfg = SplunkMCPConfig.from_env()
         assert cfg.max_row_limit == 500
         assert cfg.default_row_limit == 50
+
+    def test_timeout_default_is_45(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clean_env(monkeypatch)
+        monkeypatch.setenv("SPLUNK_HOST", "h")
+        monkeypatch.setenv("SPLUNK_TOKEN", "tok")
+        cfg = SplunkMCPConfig.from_env()
+        assert cfg.timeout == 45.0
+
+    def test_timeout_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clean_env(monkeypatch)
+        monkeypatch.setenv("SPLUNK_HOST", "h")
+        monkeypatch.setenv("SPLUNK_TOKEN", "tok")
+        monkeypatch.setenv("MCP_TIMEOUT", "90")
+        cfg = SplunkMCPConfig.from_env()
+        assert cfg.timeout == 90.0
+
+    def test_default_earliest_time_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clean_env(monkeypatch)
+        monkeypatch.setenv("SPLUNK_HOST", "h")
+        monkeypatch.setenv("SPLUNK_TOKEN", "tok")
+        cfg = SplunkMCPConfig.from_env()
+        assert cfg.default_earliest_time == "-24h"
+
+    def test_default_earliest_time_custom(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _clean_env(monkeypatch)
+        monkeypatch.setenv("SPLUNK_HOST", "h")
+        monkeypatch.setenv("SPLUNK_TOKEN", "tok")
+        monkeypatch.setenv("MCP_DEFAULT_EARLIEST_TIME", " -7d ")
+        cfg = SplunkMCPConfig.from_env()
+        assert cfg.default_earliest_time == "-7d"
+
+    @pytest.mark.parametrize("raw", ["0", "", "  ", " 0 "])
+    def test_default_earliest_time_disabled(
+        self, monkeypatch: pytest.MonkeyPatch, raw: str
+    ) -> None:
+        _clean_env(monkeypatch)
+        monkeypatch.setenv("SPLUNK_HOST", "h")
+        monkeypatch.setenv("SPLUNK_TOKEN", "tok")
+        monkeypatch.setenv("MCP_DEFAULT_EARLIEST_TIME", raw)
+        cfg = SplunkMCPConfig.from_env()
+        assert cfg.default_earliest_time is None
 
     def test_ssl_verify_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _clean_env(monkeypatch)

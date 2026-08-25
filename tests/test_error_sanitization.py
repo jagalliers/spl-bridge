@@ -287,6 +287,9 @@ class TestClassifiedExceptionMessages:
             requests.exceptions.Timeout("read timeout " + SECRET_BODY)
         )
         assert "Splunk request timed out" in msg
+        # Remediation hint so the model can act instead of retrying blind.
+        assert "earliest_time" in msg
+        assert "get_metadata" in msg
         assert "request_id=" in msg
         assert "abc123" not in msg
         assert "hunter2" not in msg

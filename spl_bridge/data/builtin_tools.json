@@ -1,7 +1,7 @@
 {
   "name": "spl-bridge default tool catalogue",
   "description": "Default MCP tool collection. Each entry wraps a publicly documented Splunk REST endpoint (https://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTprolog) with a thin SPL `| rest` invocation and a deterministic `| fields` projection. See data/PROVENANCE.md for per-tool source-of-record citations.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "_provenance": "Independently authored against the public Splunk REST API Reference. Not derived from the CiscoDevNet/Splunk-MCP-Server-official source or the Splunkbase Splunk MCP Server app.",
   "tools": [
     {
@@ -117,16 +117,30 @@
       "_key": "spl_bridge:builtin:run_query",
       "name": "run_query",
       "title": "run_query",
-      "description": "Execute an ad-hoc SPL search supplied by the caller. The SPL is validated against the project's command allowlist (data/safe_spl.json) before dispatch.",
+      "description": "Execute an ad-hoc SPL search supplied by the caller. The SPL is validated against the project's command allowlist (data/safe_spl.json) before dispatch. When earliest_time and latest_time are both omitted, a server-configured default window (default -24h to now) is applied and disclosed in the response's time_window field; pass earliest_time=\"0\" to search all time. Use get_metadata first to discover which indexes and sourcetypes hold data, and when.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "query": {
             "type": "string",
-            "description": "SPL search to execute. Maximum 5000 characters.",
+            "description": "SPL search to execute (e.g. 'search index=main error | head 20'). Maximum 5000 characters.",
             "pattern": "^[\\s\\S]{1,5000}$",
             "validation_message": "SPL query is required and limited to 5000 characters.",
             "_meta": { "formatting": { "needs_quoting": false } }
+          },
+          "earliest_time": {
+            "type": "string",
+            "description": "Start of the search window as a Splunk time modifier, e.g. \"-24h\", \"-7d\", \"2025-12-31T00:00:00\". Use \"0\" to search all time. If omitted, a server-configured default window applies (default -24h) and is disclosed in the response's time_window field.",
+            "_meta": { "formatting": { "needs_quoting": false } }
+          },
+          "latest_time": {
+            "type": "string",
+            "description": "End of the search window as a Splunk time modifier, e.g. \"now\", \"-1h\", \"2026-01-01T00:00:00\". Defaults to now if omitted.",
+            "_meta": { "formatting": { "needs_quoting": false } }
+          },
+          "row_limit": {
+            "type": "integer",
+            "description": "Maximum number of result rows to return. Server-capped at the configured maximum (default 1000)."
           }
         },
         "required": ["query"]
@@ -282,12 +296,12 @@
           },
           "earliest_time": {
             "type": "string",
-            "description": "Override the saved search's default earliest time (e.g., -24h, -7d).",
+            "description": "Optional earliest time override for this run, as a Splunk time modifier (e.g. \"-24h\", \"-7d\"). Omit to use the saved search's stored time window. Inline time modifiers in the saved search's own SPL take precedence either way.",
             "_meta": { "formatting": { "needs_quoting": false } }
           },
           "latest_time": {
             "type": "string",
-            "description": "Override the saved search's default latest time (e.g., now, -1h).",
+            "description": "Optional latest time override for this run, as a Splunk time modifier (e.g. \"now\", \"-1h\"). Omit to use the saved search's stored time window.",
             "_meta": { "formatting": { "needs_quoting": false } }
           },
           "app": {
@@ -306,7 +320,7 @@
           "type": "spl",
           "template": "| savedsearch $saved_search_name$ $args$",
           "row_limiter": true,
-          "time_range": false
+          "time_range": true
         },
         "built_in": true
       }
