@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "spl-bridge"
-version = "0.1.0"
+version = "0.2.0"
 description = "stdio MCP bridge for the Splunk Enterprise / Splunk Cloud REST API"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -13,6 +13,9 @@ license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"]
 dependencies = [
     # <2: mcp 2.x removed mcp.server.fastmcp, which server.py depends on.
     "mcp>=1.2.0,<2",
+    # Direct import in server.py (Field for MCP param descriptions);
+    # already a hard transitive dependency of mcp.
+    "pydantic>=2",
     "requests>=2.31.0",
     "platformdirs>=4.0",
 ]

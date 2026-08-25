@@ -39,6 +39,9 @@ services:
       SPLUNK_TOKEN_FILE: /run/secrets/splunk_token
       MCP_REQUIRE_CAPABILITIES: "true"
       MCP_RATE_LIMITS: '{"global":120,"run_search":30}'
+      # Default earliest_time for ad-hoc splunk_run_query when the caller
+      # omits both time params. "0" or empty disables (All Time).
+      # MCP_DEFAULT_EARLIEST_TIME: "-24h"
     secrets:
       - splunk_token
     # Tight resource limits make abusive prompts more expensive.

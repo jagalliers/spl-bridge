@@ -9,6 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Default time window for ad-hoc queries, with in-band disclosure.**
+  When a caller omits both `earliest_time` and `latest_time` on
+  `splunk_run_query`, the server now applies a configurable default
+  window (`MCP_DEFAULT_EARLIEST_TIME`, default `-24h`; set to `0` or
+  empty to disable and restore the previous unbounded behavior).
+  Rationale: an omitted window meant an All-Time scan, and in a live
+  agent session that was the leading cause of opaque 60-second
+  timeouts — small models write time filters *inside* the SPL
+  incorrectly (`earliest_time="..."` is a field filter that matches
+  nothing, not a time modifier) and never discover the job-level
+  parameters. Because a silently narrowed window is more dangerous
+  than an error (a clean `[]` reads as "no such data exists"), every
+  response produced under the default carries a `time_window` field
+  (`"-24h to now (default; pass earliest_time/latest_time to
+  override, earliest_time=\"0\" for all time)"`) so the calling LLM
+  sees the applied bound in-band with the results it reasons over.
+  Scoped to `splunk_run_query` only: `splunk_run_saved_search` keeps
+  omitted params meaning "run the saved search unmodified", and
+  `splunk_get_metadata` stays unbounded because cheap wide-range
+  discovery (`firstTime`/`lastTime`) is exactly what it exists for.
+  Job-level parameters do not override inline SPL time modifiers
+  (verified against Splunk 10: inline `earliest=`/`latest=` and
+  `tstats … earliest=` take precedence), so the default only affects
+  queries with no time specification at all.
+- **Per-parameter descriptions in the advertised MCP schema.** FastMCP
+  derives the `tools/list` schema from the Python signatures in
+  `server._register_tool`, not from `data/builtin_tools.json` — so
+  every parameter (including `query` itself) was advertised as a bare
+  type with no description, and LLM callers choosing arguments by
+  imitation routed around `earliest_time`/`latest_time`/`row_limit`
+  entirely. All five registration shapes now carry
+  `Annotated[..., Field(description=...)]` metadata (module-level
+  constants — required, because `from __future__ import annotations`
+  makes FastMCP resolve annotation strings against the module
+  globals). The `earliest_time` description documents the `"0"`
+  all-time escape hatch and the `time_window` disclosure, and a test
+  keeps the constants aligned with the catalog descriptions.
+  `pydantic` is now a declared direct dependency (it was already a
+  hard transitive dependency of `mcp`).
 - **`spl-bridge doctor --hosts` audits MCP host configs for stale
   bare-command `spl-bridge` entries.** Inspects the user-scope Cursor
   config (`~/.cursor/mcp.json`) and the per-OS Claude Desktop config
@@ -39,6 +78,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Default `MCP_TIMEOUT` lowered from 60s to 45s, and the timeout
+  error now carries remediation.** With both the bridge and typical
+  MCP clients budgeted at 60s, the client always won the race and the
+  model only ever saw an opaque `MCP error -32001: Request timed out`
+  — no hint about what to change. At 45s the bridge usually answers
+  first, and its error now says what to do: narrow the search with
+  `earliest_time`, add `index=`/`sourcetype=` filters, or scope with
+  `splunk_get_metadata` first (the existing curated-hint style from
+  the saved-search 400 classifier). Trade-off: searches that
+  legitimately take 45–60s and previously succeeded now fail by
+  default — raise `MCP_TIMEOUT` if that describes your deployment.
+  A client budgeted below 45s still sees its own error first; this
+  improves the common case, it cannot guarantee the good path.
+- **`run_query`'s catalog `inputSchema` now declares
+  `earliest_time`/`latest_time`/`row_limit`.** The wire schema always
+  advertised all four parameters (they come from the Python
+  signature); the catalog said `query`-only, which misled audits of
+  the tool surface and — because `_validate_args` skips undeclared
+  arguments — meant the three extras flowed through unvalidated.
+  Declaring them activates basic type validation. Deliberately **no
+  `pattern`** on the time parameters: Splunk time modifiers
+  legitimately contain `@:+-` etc., the values travel as REST form
+  fields (never spliced into SPL text, so there is no injection
+  surface for a client-side pattern to defend), and Splunk validates
+  time syntax server-side. A test guards against a restrictive
+  pattern being added later.
 - **HTTP transport no longer pools connections.** `SplunkClient` now
   issues each REST call via `requests.request(...)` instead of a
   shared `requests.Session()`, mirroring Splunk's own reference MCP
@@ -94,6 +159,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`splunk_run_saved_search` silently dropped `earliest_time` and
+  `latest_time`.** The catalog declared both parameters ("Override
+  the saved search's default earliest time"), the tool accepted and
+  validated them — and `build_spl` then discarded them, because the
+  tool's execution metadata had `time_range: false`. The documented
+  overrides were no-ops and the search always ran without job-level
+  time bounds. `time_range` is now `true`: provided values reach the
+  export job as dispatch parameters; omitted values continue to send
+  nothing, so existing calls without time arguments behave exactly as
+  before. Verified live on Splunk 10: with no job-level time range,
+  `| savedsearch` honors the saved search's stored dispatch window,
+  and a provided job-level override takes precedence over it.
 - **`mcp` dependency bounded to `>=1.2.0,<2` — fresh installs were
   broken.** The mcp Python SDK 2.x removed `mcp.server.fastmcp`, so an
   unbounded `mcp>=1.2.0` resolved 2.1.0 on any fresh non-Docker

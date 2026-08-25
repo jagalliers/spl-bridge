@@ -321,9 +321,10 @@ These can be set directly in the shell, in the MCP host's `env` block, or via `_
 | `SPLUNK_TOKEN_FILE` | — | Path to a file containing the token (Docker / K8s secret pattern) |
 | `SPLUNK_USERNAME_FILE` | — | Path to a file containing the username |
 | `SPLUNK_PASSWORD_FILE` | — | Path to a file containing the password |
-| `MCP_TIMEOUT` | `60.0` | HTTP request timeout in seconds |
+| `MCP_TIMEOUT` | `45.0` | HTTP request timeout in seconds. Deliberately below the common 60s MCP client request budget so the bridge can return an actionable timeout error (with remediation hints) before the client gives up with an opaque `-32001`. Raise it if your deployment legitimately runs 45–60s searches |
 | `MCP_MAX_ROW_LIMIT` | `1000` | Maximum rows any tool can return |
 | `MCP_DEFAULT_ROW_LIMIT` | `100` | Default row limit when not specified |
+| `MCP_DEFAULT_EARLIEST_TIME` | `-24h` | Default `earliest_time` applied to `splunk_run_query` **only**, when the caller omits both time parameters. The applied window is disclosed in the response's `time_window` field. Set to `0` (or empty) to disable and restore unbounded All-Time searches. Does not affect `splunk_run_saved_search` (omitted means "run the saved search unmodified") or `splunk_get_metadata` (discovery over wide ranges is cheap and is the point of that tool) |
 | `MCP_REQUIRE_CAPABILITIES` | `false` | When `true`, verify the Splunk principal has the `search` capability before serving any tool |
 | `MCP_RATE_LIMITS` | — | JSON map of per-tool 60s rate limits, e.g. `{"global":600,"splunk_run_query":120}`. Per-key values are bounded to `[0, 1_000_000]`; `0` means always-deny |
 | `MCP_MAX_RESPONSE_BYTES` | `67108864` (64 MiB) | Hard cap on a single Splunk REST response body. Over-cap responses are converted to a synthetic HTTP 502 and the body is dropped before reaching the tool layer. Raise only if your environment legitimately returns >64 MiB single-call payloads (very unusual; per-call streaming and `head` row limits are the right fix) |
@@ -344,11 +345,11 @@ The MCP tool names below use `splunk_*` as a descriptive prefix (nominative use,
 | `splunk_get_index_info` | Detailed info for a specific index | `/services/data/indexes` |
 | `splunk_get_user_list` | List Splunk users | `/services/authentication/users` |
 | `splunk_get_user_info` | Current authenticated user details | `/services/authentication/current-context` |
-| `splunk_run_query` | Execute an ad-hoc, allowlisted SPL query | `/services/search/jobs/export` |
+| `splunk_run_query` | Execute an ad-hoc, allowlisted SPL query. Applies a default `-24h` time window when both time parameters are omitted (see `MCP_DEFAULT_EARLIEST_TIME`), disclosed in the response as `time_window` | `/services/search/jobs/export` |
 | `splunk_get_metadata` | Hosts, sources, or sourcetypes metadata | SPL `| metadata` |
 | `splunk_get_kv_store_collections` | KV Store collection statistics (raw bytes) | `/services/server/introspection/kvstore/collectionstats` |
 | `splunk_get_knowledge_objects` | Knowledge objects by type (saved searches, macros, lookups, etc.) | `/servicesNS/-/-/...` family |
-| `splunk_run_saved_search` | Execute a saved search by name | SPL `| savedsearch` |
+| `splunk_run_saved_search` | Execute a saved search by name, with optional `earliest_time`/`latest_time` overrides for the run | SPL `| savedsearch` |
 
 ## Security
 

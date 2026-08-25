@@ -163,7 +163,7 @@ class SplunkMCPConfig:
     port: int = 8089
     scheme: str = "https"
     ssl_verify: bool | str = True
-    timeout: float = 60.0
+    timeout: float = 45.0
 
     splunk_token: str | None = None
     username: str | None = None
@@ -172,6 +172,9 @@ class SplunkMCPConfig:
     app: str | None = None
     max_row_limit: int = 1000
     default_row_limit: int = 100
+    # Default earliest_time applied to ad-hoc run_query when the caller omits
+    # both time parameters. ``None`` means no default (unbounded / All Time).
+    default_earliest_time: str | None = "-24h"
     require_capabilities: bool = False
     rate_limits: dict[str, int] | None = None
     max_response_bytes: int = 64 * 1024 * 1024  # 64 MiB; L-2 cap on Splunk responses.
@@ -202,7 +205,7 @@ class SplunkMCPConfig:
         port = int(os.environ.get("SPLUNK_PORT", "8089"))
         scheme = os.environ.get("SPLUNK_SCHEME", "https")
         ssl_verify = _parse_ssl_verify(os.environ.get("SPLUNK_VERIFY_SSL", "true"))
-        timeout = float(os.environ.get("MCP_TIMEOUT", "60.0"))
+        timeout = float(os.environ.get("MCP_TIMEOUT", "45.0"))
 
         splunk_token = _resolve_secret("SPLUNK_TOKEN")
         username = _resolve_secret("SPLUNK_USERNAME")
@@ -222,6 +225,18 @@ class SplunkMCPConfig:
         app = os.environ.get("SPLUNK_APP") or None
         max_row_limit = int(os.environ.get("MCP_MAX_ROW_LIMIT", "1000"))
         default_row_limit = int(os.environ.get("MCP_DEFAULT_ROW_LIMIT", "100"))
+
+        default_earliest_time_raw = os.environ.get("MCP_DEFAULT_EARLIEST_TIME")
+        if default_earliest_time_raw is None:
+            default_earliest_time: str | None = SplunkMCPConfig.__dataclass_fields__[
+                "default_earliest_time"
+            ].default  # type: ignore[assignment]
+        elif default_earliest_time_raw.strip() in ("", "0"):
+            # "0"/empty disables the default window (All Time, the pre-0.2.0
+            # behavior). Splunk itself treats earliest_time=0 as all time.
+            default_earliest_time = None
+        else:
+            default_earliest_time = default_earliest_time_raw.strip()
 
         require_capabilities = os.environ.get("MCP_REQUIRE_CAPABILITIES", "").lower() in (
             "true",
@@ -304,6 +319,7 @@ class SplunkMCPConfig:
             app=app,
             max_row_limit=max_row_limit,
             default_row_limit=default_row_limit,
+            default_earliest_time=default_earliest_time,
             require_capabilities=require_capabilities,
             rate_limits=rate_limits,
             max_response_bytes=max_response_bytes,
